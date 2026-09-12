@@ -1381,7 +1381,7 @@ public class GriefPrevention extends JavaPlugin
                 //validate player argument or group argument
                 if (!args[0].startsWith("[") || !args[0].endsWith("]"))
                 {
-                    otherPlayer = this.resolvePlayerByName(args[0]);
+                    otherPlayer = OfflineUntrustResolver.resolve(this, player, claim, args[0]);
                     if (!clearPermissions && otherPlayer == null && !args[0].equals("public"))
                     {
                         //bracket any permissions - at this point it must be a permission without brackets
