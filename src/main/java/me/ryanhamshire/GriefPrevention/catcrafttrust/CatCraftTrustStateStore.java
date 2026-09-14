@@ -18,7 +18,9 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -27,6 +29,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -203,13 +206,24 @@ public final class CatCraftTrustStateStore
     synchronized void beginTransition(TrustTransition transition)
     {
         Objects.requireNonNull(transition, "transition");
-        if (transition.intendedRecord() != null
-                && !records.containsKey(transition.key())
-                && records.size() >= maximumRecords)
+        ensureCapacity(List.of(transition.key()));
+        transitions.put(transition.key(), transition);
+    }
+
+    synchronized void ensureCapacity(Collection<String> keys)
+    {
+        Set<String> union = new HashSet<>(records.keySet());
+        union.addAll(transitions.keySet());
+        union.addAll(keys);
+        if (union.size() > maximumRecords)
         {
             throw new IllegalStateException("CatCraft temporary trust record limit reached");
         }
-        transitions.put(transition.key(), transition);
+    }
+
+    synchronized void removeTransition(String key)
+    {
+        transitions.remove(key);
     }
 
     synchronized void completeTransition(String key)
@@ -469,6 +483,11 @@ public final class CatCraftTrustStateStore
 
     private ParsedState parseFile(Path source) throws IOException
     {
+        long sourceSize = Files.size(source);
+        if (sourceSize > maximumFileBytes())
+        {
+            throw new IOException("CatCraft trust state file exceeds configured bound");
+        }
         byte[] raw = Files.readAllBytes(source);
         if (raw.length > maximumFileBytes())
         {
@@ -783,6 +802,7 @@ record TrustTransition(String key,
         Objects.requireNonNull(key, "key");
         Objects.requireNonNull(precedingState, "precedingState");
         Objects.requireNonNull(intendedState, "intendedState");
+        validateKey(key);
         if (precedingRecord != null && !key.equals(precedingRecord.key()))
         {
             throw new IllegalArgumentException("preceding record key mismatch");
@@ -790,6 +810,53 @@ record TrustTransition(String key,
         if (intendedRecord != null && !key.equals(intendedRecord.key()))
         {
             throw new IllegalArgumentException("intended record key mismatch");
+        }
+    }
+
+    private static void validateKey(String key)
+    {
+        int first = key.indexOf('|');
+        int second = key.indexOf('|', first + 1);
+        if (first <= 0 || second <= first + 1 || second == key.length() - 1
+                || key.indexOf('|', second + 1) >= 0)
+        {
+            throw new IllegalArgumentException("invalid transition key shape");
+        }
+        String claimId = key.substring(0, first);
+        for (int index = 0; index < claimId.length(); index++)
+        {
+            char digit = claimId.charAt(index);
+            if (digit < '0' || digit > '9')
+            {
+                throw new IllegalArgumentException("invalid transition claim id");
+            }
+        }
+        long parsedClaimId;
+        try
+        {
+            parsedClaimId = Long.parseLong(claimId);
+        }
+        catch (NumberFormatException ex)
+        {
+            throw new IllegalArgumentException("invalid transition claim id", ex);
+        }
+        if (parsedClaimId < 0) throw new IllegalArgumentException("invalid transition claim id");
+        TrustDimension dimension;
+        try
+        {
+            dimension = TrustDimension.valueOf(key.substring(first + 1, second));
+        }
+        catch (IllegalArgumentException ex)
+        {
+            throw new IllegalArgumentException("invalid transition dimension", ex);
+        }
+        String target = key.substring(second + 1);
+        String canonical = target.trim().toLowerCase(Locale.ROOT);
+        if (target.isEmpty() || target.length() > TemporaryTrustRecord.MAX_TARGET_LENGTH
+                || !target.equals(canonical)
+                || !key.equals(parsedClaimId + "|" + dimension + "|" + canonical))
+        {
+            throw new IllegalArgumentException("invalid transition target");
         }
     }
 }

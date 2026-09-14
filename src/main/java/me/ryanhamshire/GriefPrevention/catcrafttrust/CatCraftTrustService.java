@@ -123,8 +123,21 @@ public final class CatCraftTrustService
         Objects.requireNonNull(kind, "kind");
         String canonicalTarget = canonicalTarget(target);
         processDue(nowMillis.getAsLong());
-        List<GrantMutation> mutations = new ArrayList<>();
+        List<Claim> eligibleClaims = new ArrayList<>();
+        Set<String> batchKeys = new HashSet<>();
+        TrustDimension batchDimension = dimensionFor(kind);
         for (Claim claim : claims)
+        {
+            if (claim != null && claim.getID() != null)
+            {
+                eligibleClaims.add(claim);
+                batchKeys.add(TemporaryTrustRecordKey.key(
+                        claim.getID(), canonicalTarget, batchDimension));
+            }
+        }
+        store.ensureCapacity(batchKeys);
+        List<GrantMutation> mutations = new ArrayList<>();
+        for (Claim claim : eligibleClaims)
         {
             if (claim == null || claim.getID() == null) continue;
             long claimId = claim.getID();
@@ -134,7 +147,7 @@ public final class CatCraftTrustService
             Optional<TemporaryTrustRecord> previousRecord = store.get(claimId, canonicalTarget, dimension);
             NativeTrustState baseline = previousRecord.isPresent()
                     && current.equals(previousRecord.get().expectedState())
-                    ? previousRecord.get().previousState() : current;
+                    ? replacementBaseline(previousRecord.get()) : current;
             NativeTrustState expected = desiredState(kind, current);
             TemporaryTrustRecord precedingRecord = previousRecord.isPresent()
                     && current.equals(previousRecord.get().expectedState())
@@ -178,8 +191,22 @@ public final class CatCraftTrustService
         Objects.requireNonNull(claims, "claims");
         String canonicalTarget = canonicalTarget(target);
         processDue(nowMillis.getAsLong());
-        List<RevokeMutation> mutations = new ArrayList<>();
+        List<Claim> eligibleClaims = new ArrayList<>();
+        Set<String> batchKeys = new HashSet<>();
         for (Claim claim : claims)
+        {
+            if (claim != null && claim.getID() != null)
+            {
+                eligibleClaims.add(claim);
+                batchKeys.add(TemporaryTrustRecordKey.key(
+                        claim.getID(), canonicalTarget, TrustDimension.PERMISSION));
+                batchKeys.add(TemporaryTrustRecordKey.key(
+                        claim.getID(), canonicalTarget, TrustDimension.MANAGER));
+            }
+        }
+        store.ensureCapacity(batchKeys);
+        List<RevokeMutation> mutations = new ArrayList<>();
+        for (Claim claim : eligibleClaims)
         {
             if (claim == null || claim.getID() == null) continue;
             long claimId = claim.getID();
@@ -253,7 +280,10 @@ public final class CatCraftTrustService
         if (internalMutationDepth > 0 || claim == null || claim.getID() == null || dimension == null) return;
         try
         {
-            store.remove(claim.getID() + "|" + dimension + "|" + canonicalTarget(target));
+            String key = TemporaryTrustRecordKey.key(
+                    claim.getID(), canonicalTarget(target), dimension);
+            store.remove(key);
+            store.removeTransition(key);
         }
         catch (RuntimeException ex)
         {
@@ -497,6 +527,13 @@ public final class CatCraftTrustService
     private static TrustDimension dimensionFor(CatCraftTrustKind kind)
     {
         return kind == CatCraftTrustKind.MANAGE ? TrustDimension.MANAGER : TrustDimension.PERMISSION;
+    }
+
+    private static NativeTrustState replacementBaseline(TemporaryTrustRecord previous)
+    {
+        return previous.expiresAtMillis() == 0L
+                && previous.appliedKind() == CatCraftTrustKind.BUILD
+                ? previous.expectedState() : previous.previousState();
     }
 
     private static NativeTrustState desiredState(CatCraftTrustKind kind, NativeTrustState current)

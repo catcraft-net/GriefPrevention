@@ -11,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Optional;
+import java.util.Base64;
+import java.util.Properties;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -173,6 +175,38 @@ class CatCraftTrustStateStoreTest
                 + "x".repeat(2_000_000) + "\n";
         Files.writeString(file, oversized, StandardCharsets.UTF_8);
         assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 1).load());
+    }
+
+    @Test
+    void malformedTransitionKeyFallsBackToValidBackup() throws Exception
+    {
+        Path file = directory.resolve("malformed-transition.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord valid = record(42L, "target", 0L, 1L);
+        store.put(valid);
+        store.save();
+        store.put(record(43L, "other", 0L, 2L));
+        store.save();
+
+        Properties corrupt = new Properties();
+        corrupt.setProperty("version", "2");
+        corrupt.setProperty("count", "0");
+        corrupt.setProperty("transition.count", "1");
+        String malformedKey = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("not-a-transition-key".getBytes(StandardCharsets.UTF_8));
+        String transition = String.join("|", malformedKey, "-", "-,false,false",
+                "-", "-,false,false");
+        corrupt.setProperty("transition.0", Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(transition.getBytes(StandardCharsets.UTF_8)));
+        try (var writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8))
+        {
+            corrupt.store(writer, "corrupt primary");
+        }
+
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+
+        assertEquals(List.of(valid), recovered.forClaim(42L));
     }
 
     private static TemporaryTrustRecord record(long claimId, String target, long expiresAtMillis, long revision)

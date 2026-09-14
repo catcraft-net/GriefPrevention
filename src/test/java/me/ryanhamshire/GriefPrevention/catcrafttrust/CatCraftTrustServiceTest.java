@@ -446,6 +446,82 @@ class CatCraftTrustServiceTest
         assertTrue(access.applied.isEmpty());
     }
 
+    @Test
+    void temporaryReplacementRestoresPermanentBuildStateAndMarkerBaseline()
+            throws Exception
+    {
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        AtomicLong now = new AtomicLong(1_700_000_000_000L);
+        CatCraftTrustService service = service(access, scheduler, now, 10);
+        Claim claim = claim(42L, OWNER);
+
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, null);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofDays(1));
+
+        now.addAndGet(Duration.ofDays(1).toMillis());
+        scheduler.runFuture();
+
+        assertEquals(new NativeTrustState(ClaimPermission.Access, false, true),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
+    void externalMutationRemovesPendingTransitionBeforePersistence()
+            throws Exception
+    {
+        Path file = directory.resolve("external-transition.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler,
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        access.failApply = true;
+        assertThrows(RuntimeException.class, () -> service.grant(
+                List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1)));
+
+        service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+        access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION),
+                new NativeTrustState(ClaimPermission.Access, false, true));
+        FakeAccess restartedAccess = access(42L, OWNER,
+                new NativeTrustState(ClaimPermission.Access, false, true));
+        CatCraftTrustService restarted = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), restartedAccess,
+                new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+
+        restarted.start();
+
+        assertTrue(restarted.recordsForClaim(42L).isEmpty());
+    }
+
+    @Test
+    void multiClaimBatchFailsCapacityPreflightBeforeWritingTransitions()
+            throws Exception
+    {
+        Path file = directory.resolve("capacity-preflight.properties");
+        FakeAccess access = new FakeAccess();
+        for (long claimId = 1L; claimId <= 2L; claimId++)
+        {
+            access.snapshots.put(claimId, new ClaimSnapshot(claimId, OWNER, null, false));
+            access.states.put(access.key(claimId, TARGET, TrustDimension.PERMISSION), NONE);
+        }
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 1), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+
+        service.start();
+
+        assertThrows(IllegalStateException.class, () -> service.grant(
+                List.of(claim(1L, OWNER), claim(2L, OWNER)),
+                TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1)));
+        assertFalse(Files.exists(file));
+        assertTrue(service.recordsForClaim(1L).isEmpty());
+        assertTrue(service.recordsForClaim(2L).isEmpty());
+    }
+
     private CatCraftTrustService service(FakeAccess access, FakeScheduler scheduler,
                                          AtomicLong now, int maxExpirations)
     {
