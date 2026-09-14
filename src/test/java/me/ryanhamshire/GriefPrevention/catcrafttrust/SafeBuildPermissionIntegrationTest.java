@@ -42,6 +42,7 @@ class SafeBuildPermissionIntegrationTest
         plugin.dataStore = mock(DataStore.class);
         when(plugin.dataStore.getPlayerData(any(UUID.class))).thenReturn(new PlayerData());
         plugin.catCraftTrustService = service;
+        when(service.isStarted()).thenReturn(true);
         GriefPrevention.instance = plugin;
     }
 
@@ -125,8 +126,19 @@ class SafeBuildPermissionIntegrationTest
 
         claim.dropPermission(target);
 
-        verify(service).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
-        verify(service).onExternalPermissionMutation(claim, target, TrustDimension.MANAGER);
+        verify(service).onExternalTargetRemoved(claim, target);
+    }
+
+    @Test
+    void externalManagerAssignmentAlsoReplacesSafeBuildMetadata()
+    {
+        Claim claim = claim(42L, OWNER);
+        claim.inDataStore = true;
+        String target = BUILDER.toString();
+
+        claim.setPermission(target, ClaimPermission.Manage);
+
+        verify(service).onExternalTargetMutation(claim, target);
     }
 
     @Test
@@ -142,7 +154,27 @@ class SafeBuildPermissionIntegrationTest
         parent.clearPermissions();
 
         verify(service).onExternalPermissionsCleared(parent);
-        verify(service).onExternalPermissionsCleared(child);
+        verify(service, never()).onExternalPermissionsCleared(child);
+    }
+
+    @Test
+    void stoppedServiceCannotGrantOverlayOrInvalidateMetadata()
+    {
+        Claim claim = claim(42L, OWNER);
+        claim.inDataStore = true;
+        when(service.isStarted()).thenReturn(false);
+        when(service.isSafeBuilder(claim, BUILDER, null)).thenReturn(true);
+
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Build));
+        claim.setPermission(BUILDER.toString(), ClaimPermission.Access);
+        claim.dropPermission(BUILDER.toString());
+        claim.clearPermissions();
+
+        verify(service, never()).isSafeBuilder(any(), any(), any());
+        verify(service, never()).onExternalPermissionMutation(any(), any(), any());
+        verify(service, never()).onExternalTargetMutation(any(), any());
+        verify(service, never()).onExternalTargetRemoved(any(), any());
+        verify(service, never()).onExternalPermissionsCleared(any());
     }
 
     @Test

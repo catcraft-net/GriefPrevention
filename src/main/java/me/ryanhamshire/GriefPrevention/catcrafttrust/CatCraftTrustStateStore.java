@@ -221,9 +221,9 @@ public final class CatCraftTrustStateStore
         }
     }
 
-    synchronized void removeTransition(String key)
+    synchronized boolean removeTransition(String key)
     {
-        transitions.remove(key);
+        return transitions.remove(key) != null;
     }
 
     synchronized void completeTransition(String key)
@@ -368,7 +368,10 @@ public final class CatCraftTrustStateStore
 
     public synchronized int removeTarget(long claimId, String target, TrustDimension dimension)
     {
-        return removeInternal(key(claimId, target, dimension)) == null ? 0 : 1;
+        String key = key(claimId, target, dimension);
+        int removed = removeInternal(key) == null ? 0 : 1;
+        if (transitions.remove(key) != null) removed++;
+        return removed;
     }
 
     public synchronized int removeTargetAll(long claimId, String target)

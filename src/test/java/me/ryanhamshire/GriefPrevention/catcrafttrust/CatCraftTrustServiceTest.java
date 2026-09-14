@@ -211,6 +211,91 @@ class CatCraftTrustServiceTest
     }
 
     @Test
+    void inactiveServiceDoesNotMutateOrPersistLoadedMetadata() throws Exception
+    {
+        Path file = directory.resolve("inactive-state.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(new TemporaryTrustRecord(42L, TARGET, CatCraftTrustKind.BUILD,
+                TrustDimension.PERMISSION, NONE,
+                new NativeTrustState(ClaimPermission.Access, false, true),
+                0L, 1L, OWNER));
+        CatCraftTrustService service = new CatCraftTrustService(
+                store, access(42L, OWNER, NONE), new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+
+        service.onExternalPermissionMutation(claim(42L, OWNER), TARGET, TrustDimension.PERMISSION);
+
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void noOpExternalMutationDoesNotCreateOrRewriteStateFile() throws Exception
+    {
+        Path file = directory.resolve("no-op-external-state.properties");
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access(42L, OWNER, NONE),
+                new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+        service.start();
+
+        service.onExternalPermissionMutation(claim(42L, OWNER), TARGET, TrustDimension.PERMISSION);
+        service.onExternalTargetMutation(claim(42L, OWNER), TARGET);
+        service.onExternalTargetRemoved(claim(42L, OWNER), TARGET);
+        service.onExternalPermissionsCleared(claim(42L, OWNER));
+
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void clearingParentRemovesParentAndSubdivisionMetadataInOneCallback() throws Exception
+    {
+        Path file = directory.resolve("clear-subtree.properties");
+        FakeAccess access = new FakeAccess();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim parent = claim(42L, OWNER);
+        Claim child = claim(43L, OWNER);
+        parent.children.add(child);
+        child.parent = parent;
+        access.snapshots.put(42L, new ClaimSnapshot(42L, OWNER, null, false));
+        access.snapshots.put(43L, new ClaimSnapshot(43L, OWNER, 42L, false));
+        access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION), NONE);
+        access.states.put(access.key(43L, TARGET, TrustDimension.PERMISSION), NONE);
+        service.start();
+        service.grant(List.of(parent, child), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+
+        service.onExternalPermissionsCleared(parent);
+
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertTrue(service.recordsForClaim(43L).isEmpty());
+    }
+
+    @Test
+    void removingTargetFromParentRemovesSubdivisionMetadataInOneCallback() throws Exception
+    {
+        FakeAccess access = new FakeAccess();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(directory.resolve("remove-subtree.properties"), 10),
+                access, new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+        Claim parent = claim(42L, OWNER);
+        Claim child = claim(43L, OWNER);
+        parent.children.add(child);
+        child.parent = parent;
+        access.snapshots.put(42L, new ClaimSnapshot(42L, OWNER, null, false));
+        access.snapshots.put(43L, new ClaimSnapshot(43L, OWNER, 42L, false));
+        access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION), NONE);
+        access.states.put(access.key(43L, TARGET, TrustDimension.PERMISSION), NONE);
+        service.start();
+        service.grant(List.of(parent, child), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+
+        service.onExternalTargetRemoved(parent, TARGET);
+
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertTrue(service.recordsForClaim(43L).isEmpty());
+    }
+
+    @Test
     void writeAheadReplacementPreservesPrecedingTimerWhenNativeApplyFails() throws Exception
     {
         Path file = directory.resolve("write-ahead.properties");
@@ -564,6 +649,7 @@ class CatCraftTrustServiceTest
     private static Claim claim(long claimId, UUID owner)
     {
         Claim claim = mock(Claim.class);
+        claim.children = new ArrayList<>();
         when(claim.getID()).thenReturn(claimId);
         when(claim.getOwnerID()).thenReturn(owner);
         return claim;

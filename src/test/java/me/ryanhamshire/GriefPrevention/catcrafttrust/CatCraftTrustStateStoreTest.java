@@ -64,7 +64,9 @@ class CatCraftTrustStateStoreTest
         when(player.hasPermission("catcraft.builders")).thenReturn(true);
 
         assertTrue(store.findSafeBuild(42L, null, null, System.currentTimeMillis(), OWNER).isPresent());
+        store.removeTarget(42L, "public", TrustDimension.PERMISSION);
         assertTrue(store.findSafeBuild(42L, null, player, System.currentTimeMillis(), OWNER).isPresent());
+        assertTrue(store.findSafeBuild(42L, null, null, System.currentTimeMillis(), OWNER).isEmpty());
     }
 
     @Test

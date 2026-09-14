@@ -104,6 +104,7 @@ public final class CatCraftTrustService
 
     public boolean isSafeBuilder(Claim claim, UUID playerId, @Nullable Player player)
     {
+        if (!loaded) return false;
         if (claim == null || claim.getID() == null) return false;
         Set<Long> visited = new HashSet<>();
         Long claimId = claim.getID();
@@ -262,28 +263,26 @@ public final class CatCraftTrustService
 
     public void onClaimDeleted(long claimId)
     {
-        store.removeClaim(claimId);
+        if (!loaded || store.removeClaim(claimId) == 0) return;
         persistBestEffort();
         scheduleNextExpiration();
     }
 
     public void onClaimOwnerChanging(Claim claim)
     {
-        if (claim == null || claim.getID() == null) return;
-        store.removeClaim(claim.getID());
+        if (!loaded || claim == null || claim.getID() == null
+                || store.removeClaim(claim.getID()) == 0) return;
         persistBestEffort();
         scheduleNextExpiration();
     }
 
     public void onExternalPermissionMutation(Claim claim, String target, TrustDimension dimension)
     {
-        if (internalMutationDepth > 0 || claim == null || claim.getID() == null || dimension == null) return;
+        if (!loaded || internalMutationDepth > 0 || claim == null
+                || claim.getID() == null || dimension == null) return;
         try
         {
-            String key = TemporaryTrustRecordKey.key(
-                    claim.getID(), canonicalTarget(target), dimension);
-            store.remove(key);
-            store.removeTransition(key);
+            if (store.removeTarget(claim.getID(), canonicalTarget(target), dimension) == 0) return;
         }
         catch (RuntimeException ex)
         {
@@ -294,10 +293,44 @@ public final class CatCraftTrustService
         scheduleNextExpiration();
     }
 
+    public void onExternalTargetMutation(Claim claim, String target)
+    {
+        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return;
+        try
+        {
+            if (store.removeTargetAll(claim.getID(), canonicalTarget(target)) == 0) return;
+        }
+        catch (RuntimeException ex)
+        {
+            logger.severe("Could not invalidate CatCraft trust metadata: " + ex.getMessage());
+            return;
+        }
+        persistBestEffort();
+        scheduleNextExpiration();
+    }
+
+    public void onExternalTargetRemoved(Claim claim, String target)
+    {
+        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return;
+        final String canonicalTarget;
+        try
+        {
+            canonicalTarget = canonicalTarget(target);
+        }
+        catch (RuntimeException ex)
+        {
+            logger.severe("Could not invalidate CatCraft trust metadata: " + ex.getMessage());
+            return;
+        }
+        if (removeTargetTree(claim, canonicalTarget, new HashSet<>()) == 0) return;
+        persistBestEffort();
+        scheduleNextExpiration();
+    }
+
     public void onExternalPermissionsCleared(Claim claim)
     {
-        if (internalMutationDepth > 0 || claim == null || claim.getID() == null) return;
-        store.removeClaim(claim.getID());
+        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return;
+        if (removeClaimTree(claim, new HashSet<>()) == 0) return;
         persistBestEffort();
         scheduleNextExpiration();
     }
@@ -307,9 +340,38 @@ public final class CatCraftTrustService
         return store.forClaim(claimId);
     }
 
+    public boolean isStarted()
+    {
+        return loaded;
+    }
+
     public boolean isInternalMutation()
     {
         return internalMutationDepth > 0;
+    }
+
+    private int removeClaimTree(Claim claim, Set<Long> visited)
+    {
+        Long claimId = claim.getID();
+        if (claimId == null || !visited.add(claimId)) return 0;
+        int removed = store.removeClaim(claimId);
+        for (Claim child : claim.children)
+        {
+            if (child != null) removed += removeClaimTree(child, visited);
+        }
+        return removed;
+    }
+
+    private int removeTargetTree(Claim claim, String target, Set<Long> visited)
+    {
+        Long claimId = claim.getID();
+        if (claimId == null || !visited.add(claimId)) return 0;
+        int removed = store.removeTargetAll(claimId, target);
+        for (Claim child : claim.children)
+        {
+            if (child != null) removed += removeTargetTree(child, target, visited);
+        }
+        return removed;
     }
 
     void processDue(long now)
