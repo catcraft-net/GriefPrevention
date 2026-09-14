@@ -1,6 +1,8 @@
 package me.ryanhamshire.GriefPrevention;
 
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustService;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.SafeBuildIntegrationHarness;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustKind;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.TrustDimension;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -8,7 +10,10 @@ import org.bukkit.plugin.PluginManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -31,6 +36,9 @@ class SafeBuildPermissionIntegrationTest
     private GriefPrevention plugin;
     private CatCraftTrustService service;
     private PluginManager pluginManager;
+
+    @TempDir
+    Path directory;
 
     @BeforeEach
     void setUp()
@@ -78,52 +86,59 @@ class SafeBuildPermissionIntegrationTest
     }
 
     @Test
-    void publicSafeBuildDecisionUsesTheSameRestrictedPermissionMatrix()
+    void publicSafeBuildMarkerFlowsThroughClaimPermissionMatrix() throws Exception
     {
         Claim claim = claim(44L, OWNER);
-        when(service.isSafeBuilder(claim, BUILDER, null)).thenReturn(true);
+        CatCraftTrustService realService = startRealService(claim);
+        realService.grant(List.of(claim), "public", CatCraftTrustKind.BUILD, null);
 
-        assertNull(check(claim, BUILDER, ClaimPermission.Build));
-        assertNull(check(claim, BUILDER, ClaimPermission.Access));
-        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertSafeBuildMatrix(claim, BUILDER);
     }
 
     @Test
-    void permissionNodeSafeBuildDecisionWorksForAnOnlinePlayer()
+    void permissionNodeMarkerFlowsThroughOnlineClaimPermissionMatrix() throws Exception
     {
         Claim claim = claim(45L, OWNER);
+        CatCraftTrustService realService = startRealService(claim);
+        realService.grant(List.of(claim), "[catcraft.builders]", CatCraftTrustKind.BUILD, null);
         Player player = mock(Player.class);
         when(player.getUniqueId()).thenReturn(BUILDER);
         when(player.hasPermission("catcraft.builders")).thenReturn(true);
-        when(service.isSafeBuilder(claim, BUILDER, player)).thenReturn(true);
 
         assertNull(check(claim, player, ClaimPermission.Build));
+        assertNull(check(claim, player, ClaimPermission.Access));
         assertNotNull(check(claim, player, ClaimPermission.Inventory));
+        assertNotNull(check(claim, player, ClaimPermission.Manage));
+        assertNotNull(check(claim, player, ClaimPermission.Edit));
     }
 
     @Test
-    void unrestrictedSubdivisionCanReceiveInheritedSafeBuildDecision()
+    void unrestrictedSubdivisionInheritsParentSafeBuildMarker() throws Exception
     {
         Claim parent = claim(46L, OWNER);
         Claim child = claim(47L, null);
         child.parent = parent;
-        when(service.isSafeBuilder(child, BUILDER, null)).thenReturn(true);
+        CatCraftTrustService realService = startRealService(parent, child);
+        realService.grant(List.of(parent), BUILDER.toString(), CatCraftTrustKind.BUILD, null);
 
-        assertNull(check(child, BUILDER, ClaimPermission.Build));
-        assertNotNull(check(child, BUILDER, ClaimPermission.Inventory));
+        assertSafeBuildMatrix(child, BUILDER);
     }
 
     @Test
-    void restrictedSubdivisionDeniesWhenServiceStopsInheritance()
+    void restrictedSubdivisionStopsParentSafeBuildMarker() throws Exception
     {
         Claim parent = claim(48L, OWNER);
         Claim child = claim(49L, null);
         child.parent = parent;
         child.setSubclaimRestrictions(true);
-        when(service.isSafeBuilder(child, BUILDER, null)).thenReturn(false);
+        CatCraftTrustService realService = startRealService(parent, child);
+        realService.grant(List.of(parent), BUILDER.toString(), CatCraftTrustKind.BUILD, null);
 
         assertNotNull(check(child, BUILDER, ClaimPermission.Build));
         assertNotNull(check(child, BUILDER, ClaimPermission.Access));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Manage));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Edit));
     }
 
     @Test
@@ -252,6 +267,22 @@ class SafeBuildPermissionIntegrationTest
             bukkit.when(Bukkit::getPluginManager).thenReturn(pluginManager);
             return claim.checkPermission(playerId, permission, null);
         }
+    }
+
+    private CatCraftTrustService startRealService(Claim... claims) throws Exception
+    {
+        CatCraftTrustService realService = SafeBuildIntegrationHarness.start(directory, claims);
+        plugin.catCraftTrustService = realService;
+        return realService;
+    }
+
+    private void assertSafeBuildMatrix(Claim claim, UUID playerId)
+    {
+        assertNull(check(claim, playerId, ClaimPermission.Build));
+        assertNull(check(claim, playerId, ClaimPermission.Access));
+        assertNotNull(check(claim, playerId, ClaimPermission.Inventory));
+        assertNotNull(check(claim, playerId, ClaimPermission.Manage));
+        assertNotNull(check(claim, playerId, ClaimPermission.Edit));
     }
 
     private Object check(Claim claim, Player player, ClaimPermission permission)
