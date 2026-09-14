@@ -212,8 +212,14 @@ public final class CatCraftTrustStateStore
 
     synchronized void ensureCapacity(Collection<String> keys)
     {
+        ensureCapacity(keys, Set.of());
+    }
+
+    synchronized void ensureCapacity(Collection<String> keys, Collection<String> removedKeys)
+    {
         Set<String> union = new HashSet<>(records.keySet());
         union.addAll(transitions.keySet());
+        union.removeAll(removedKeys);
         union.addAll(keys);
         if (union.size() > maximumRecords)
         {

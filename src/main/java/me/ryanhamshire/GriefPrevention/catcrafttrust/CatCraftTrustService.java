@@ -138,6 +138,7 @@ public final class CatCraftTrustService
         processDue(nowMillis.getAsLong());
         List<Claim> eligibleClaims = new ArrayList<>();
         Set<String> batchKeys = new HashSet<>();
+        Set<String> supersededKeys = new HashSet<>();
         TrustDimension batchDimension = dimensionFor(kind);
         for (Claim claim : claims)
         {
@@ -146,9 +147,14 @@ public final class CatCraftTrustService
                 eligibleClaims.add(claim);
                 batchKeys.add(TemporaryTrustRecordKey.key(
                         claim.getID(), canonicalTarget, batchDimension));
+                if (kind == CatCraftTrustKind.MANAGE)
+                {
+                    supersededKeys.add(TemporaryTrustRecordKey.key(
+                            claim.getID(), canonicalTarget, TrustDimension.PERMISSION));
+                }
             }
         }
-        store.ensureCapacity(batchKeys);
+        store.ensureCapacity(batchKeys, supersededKeys);
         List<GrantMutation> mutations = new ArrayList<>();
         for (Claim claim : eligibleClaims)
         {
@@ -156,8 +162,13 @@ public final class CatCraftTrustService
             long claimId = claim.getID();
             ClaimSnapshot snapshot = snapshotFor(claim);
             TrustDimension dimension = dimensionFor(kind);
-            NativeTrustState current = claimAccess.capture(claimId, canonicalTarget, dimension);
             Optional<TemporaryTrustRecord> previousRecord = store.get(claimId, canonicalTarget, dimension);
+            if (kind == CatCraftTrustKind.MANAGE)
+            {
+                store.removeTarget(claimId, canonicalTarget, TrustDimension.PERMISSION);
+            }
+            NativeTrustState current = captureForRecord(claimId, canonicalTarget, dimension,
+                    previousRecord.orElse(null));
             NativeTrustState baseline = previousRecord.isPresent()
                     && current.equals(previousRecord.get().expectedState())
                     ? replacementBaseline(previousRecord.get()) : current;
@@ -224,14 +235,16 @@ public final class CatCraftTrustService
         {
             if (claim == null || claim.getID() == null) continue;
             long claimId = claim.getID();
-            NativeTrustState permission = claimAccess.capture(claimId, canonicalTarget, TrustDimension.PERMISSION);
-            NativeTrustState manager = claimAccess.capture(claimId, canonicalTarget, TrustDimension.MANAGER);
-            NativeTrustState intendedPermission = new NativeTrustState(null, permission.manager(), false);
-            NativeTrustState intendedManager = new NativeTrustState(manager.permission(), false, manager.safeBuild());
             Optional<TemporaryTrustRecord> previousPermission =
                     store.get(claimId, canonicalTarget, TrustDimension.PERMISSION);
             Optional<TemporaryTrustRecord> previousManager =
                     store.get(claimId, canonicalTarget, TrustDimension.MANAGER);
+            NativeTrustState permission = captureForRecord(claimId, canonicalTarget,
+                    TrustDimension.PERMISSION, previousPermission.orElse(null));
+            NativeTrustState manager = captureForRecord(claimId, canonicalTarget,
+                    TrustDimension.MANAGER, previousManager.orElse(null));
+            NativeTrustState intendedPermission = new NativeTrustState(null, permission.manager(), false);
+            NativeTrustState intendedManager = new NativeTrustState(manager.permission(), false, manager.safeBuild());
             String permissionKey = TemporaryTrustRecordKey.key(
                     claimId, canonicalTarget, TrustDimension.PERMISSION);
             String managerKey = TemporaryTrustRecordKey.key(
@@ -425,7 +438,8 @@ public final class CatCraftTrustService
             store.removeIfRevision(record.key(), record.revision());
             return true;
         }
-        NativeTrustState current = claimAccess.capture(record.claimId(), record.target(), record.dimension());
+        NativeTrustState current = captureForRecord(record.claimId(), record.target(),
+                record.dimension(), record);
         if (current.equals(record.previousState()))
         {
             store.removeIfRevision(record.key(), record.revision());
@@ -442,6 +456,14 @@ public final class CatCraftTrustService
                     record.previousState(), record.dimension()));
             claimAccess.save(record.claimId());
             store.removeIfRevision(record.key(), record.revision());
+            if (restoresPermanentBuildMarker(record))
+            {
+                NativeTrustState markerState = record.previousState();
+                store.put(new TemporaryTrustRecord(record.claimId(), record.target(),
+                        CatCraftTrustKind.BUILD, TrustDimension.PERMISSION,
+                        markerState, markerState, 0L, store.nextRevision(),
+                        record.ownerIdAtGrant()));
+            }
             return true;
         }
         catch (RuntimeException failure)
@@ -450,6 +472,74 @@ public final class CatCraftTrustService
                     + record.claimId() + ": " + failure.getMessage());
             return false;
         }
+    }
+
+    private NativeTrustState captureForRecord(long claimId,
+                                              String target,
+                                              TrustDimension dimension,
+                                              @Nullable TemporaryTrustRecord activeRecord)
+    {
+        NativeTrustState raw = claimAccess.capture(claimId, target, dimension);
+        TemporaryTrustRecord permissionRecord = activeRecord != null
+                && activeRecord.dimension() == TrustDimension.PERMISSION
+                ? activeRecord
+                : store.get(claimId, target, TrustDimension.PERMISSION).orElse(null);
+        return withSafeBuild(raw, isSafeBuildRecord(permissionRecord));
+    }
+
+    private NativeTrustState captureTransitionState(TrustTransition transition)
+    {
+        long claimId = claimIdFromKey(transition.key());
+        String target = targetFromKey(transition.key());
+        TrustDimension dimension = dimensionFromKey(transition.key());
+        NativeTrustState raw = claimAccess.capture(claimId, target, dimension);
+        boolean matchesPreceding = sameNativeState(raw, transition.precedingState());
+        boolean matchesIntended = sameNativeState(raw, transition.intendedState());
+        boolean safeBuild = ifSafeBuildState(raw, transition, matchesPreceding, matchesIntended);
+        return withSafeBuild(raw, safeBuild);
+    }
+
+    private static boolean ifSafeBuildState(NativeTrustState raw,
+                                            TrustTransition transition,
+                                            boolean matchesPreceding,
+                                            boolean matchesIntended)
+    {
+        if (matchesPreceding && !matchesIntended) return transition.precedingState().safeBuild();
+        if (matchesIntended && !matchesPreceding) return transition.intendedState().safeBuild();
+        if (!matchesPreceding) return raw.safeBuild();
+        if (transition.precedingState().safeBuild() == transition.intendedState().safeBuild())
+        {
+            return transition.intendedState().safeBuild();
+        }
+        // A marker-only transition has no native evidence of which side was applied.
+        // Keep the less privileged side so a crash cannot resurrect safe-build access.
+        return false;
+    }
+
+    private static boolean sameNativeState(NativeTrustState left, NativeTrustState right)
+    {
+        return left.permission() == right.permission() && left.manager() == right.manager();
+    }
+
+    private static NativeTrustState withSafeBuild(NativeTrustState raw, boolean safeBuild)
+    {
+        return new NativeTrustState(raw.permission(), raw.manager(), safeBuild);
+    }
+
+    private static boolean isSafeBuildRecord(@Nullable TemporaryTrustRecord record)
+    {
+        return record != null
+                && record.dimension() == TrustDimension.PERMISSION
+                && record.appliedKind() == CatCraftTrustKind.BUILD
+                && record.expectedState().safeBuild();
+    }
+
+    private static boolean restoresPermanentBuildMarker(TemporaryTrustRecord record)
+    {
+        NativeTrustState previous = record.previousState();
+        return record.dimension() == TrustDimension.PERMISSION
+                && previous.permission() == ClaimPermission.Access
+                && previous.safeBuild();
     }
 
     private void reconcileStartup() throws IOException
@@ -468,8 +558,7 @@ public final class CatCraftTrustService
                 changed = true;
                 continue;
             }
-            NativeTrustState current = claimAccess.capture(claimIdFromKey(transition.key()),
-                    targetFromKey(transition.key()), dimensionFromKey(transition.key()));
+            NativeTrustState current = captureTransitionState(transition);
             if (current.equals(transition.intendedState()))
             {
                 store.completeTransition(transition.key());
@@ -493,7 +582,8 @@ public final class CatCraftTrustService
                 changed = true;
                 continue;
             }
-            NativeTrustState current = claimAccess.capture(record.claimId(), record.target(), record.dimension());
+            NativeTrustState current = captureForRecord(record.claimId(), record.target(),
+                    record.dimension(), record);
             if (!current.equals(record.expectedState()))
             {
                 store.removeIfRevision(record.key(), record.revision());
@@ -515,7 +605,8 @@ public final class CatCraftTrustService
         for (TemporaryTrustRecord record : store.safeBuildCandidates(
                 claimId, playerId, player, now, snapshot.ownerId()))
         {
-            NativeTrustState current = claimAccess.capture(claimId, record.target(), record.dimension());
+            NativeTrustState current = captureForRecord(claimId, record.target(),
+                    record.dimension(), record);
             if (current.equals(record.expectedState())) return true;
             store.removeIfRevision(record.key(), record.revision());
         }
@@ -696,12 +787,19 @@ record ClaimSnapshot(long claimId, @Nullable UUID ownerId, @Nullable Long parent
 {
 }
 
+/**
+ * Adapter for raw GriefPrevention claim state. The sidecar state store is the
+ * authority for safe-build markers; adapters must not require a safe-build
+ * field in Claim or persist that marker in native claim data.
+ */
 interface ClaimTrustAccess
 {
     @Nullable ClaimSnapshot resolve(long claimId);
 
+    /** Captures native permission and manager state; safeBuild is ignored by the service. */
     NativeTrustState capture(long claimId, String target, TrustDimension dimension);
 
+    /** Applies only the requested native dimension; safeBuild is sidecar metadata. */
     void apply(long claimId, String target, NativeTrustState state, TrustDimension dimension);
 
     void save(long claimId);

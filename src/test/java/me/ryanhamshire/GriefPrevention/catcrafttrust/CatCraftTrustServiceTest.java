@@ -607,6 +607,151 @@ class CatCraftTrustServiceTest
     }
 
     @Test
+    void rawNativeAdapterKeepsPermanentBuildMarkerThroughReplacementExpiryAndRestart()
+            throws Exception
+    {
+        Path file = directory.resolve("raw-native-marker.properties");
+        long initial = 1_700_000_000_000L;
+        AtomicLong now = new AtomicLong(initial);
+        RawNativeAccess access = rawAccess(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        Claim claim = claim(42L, OWNER);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler, now::get, 10);
+
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, null);
+        assertEquals(new NativeTrustState(ClaimPermission.Access, false, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertEquals(CatCraftTrustKind.BUILD, service.recordsForClaim(42L).get(0).appliedKind());
+        assertEquals(0L, service.recordsForClaim(42L).get(0).expiresAtMillis());
+        assertTrue(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofDays(1));
+        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+
+        now.addAndGet(Duration.ofDays(1).toMillis());
+        scheduler.runFuture();
+
+        assertEquals(new NativeTrustState(ClaimPermission.Access, false, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertEquals(CatCraftTrustKind.BUILD, service.recordsForClaim(42L).get(0).appliedKind());
+        assertEquals(0L, service.recordsForClaim(42L).get(0).expiresAtMillis());
+        assertTrue(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+
+        CatCraftTrustService restarted = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(), now::get, 10);
+        restarted.start();
+        assertEquals(1, restarted.recordsForClaim(42L).size());
+        assertEquals(CatCraftTrustKind.BUILD, restarted.recordsForClaim(42L).get(0).appliedKind());
+        assertTrue(restarted.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+    }
+
+    @Test
+    void startupCompletesMarkerTransitionWhenRawNativePermissionMatchesIntendedState()
+            throws Exception
+    {
+        Path file = directory.resolve("marker-only-transition.properties");
+        NativeTrustState markerState = new NativeTrustState(ClaimPermission.Access, false, true);
+        TemporaryTrustRecord intended = new TemporaryTrustRecord(42L, TARGET,
+                CatCraftTrustKind.BUILD, TrustDimension.PERMISSION, NONE, markerState,
+                0L, 1L, OWNER);
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.beginTransition(new TrustTransition(intended.key(), null, NONE,
+                intended, markerState));
+        store.save();
+
+        RawNativeAccess access = rawAccess(42L, OWNER,
+                new NativeTrustState(ClaimPermission.Access, false, false));
+        Claim claim = claim(42L, OWNER);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+
+        service.start();
+
+        assertEquals(List.of(intended), service.recordsForClaim(42L));
+        assertTrue(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+    }
+
+    @Test
+    void normalManageGrantSupersedesSafeBuildMarkerAndPreservesNativeAccess()
+            throws Exception
+    {
+        Path file = directory.resolve("manage-supersedes-marker.properties");
+        RawNativeAccess access = rawAccess(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, null);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, null);
+
+        assertEquals(new NativeTrustState(ClaimPermission.Access, true, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertFalse(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+    }
+
+    @Test
+    void manageReplacementUsesCapacityOfSupersededPermissionRecord()
+            throws Exception
+    {
+        Path file = directory.resolve("manage-capacity-replacement.properties");
+        RawNativeAccess access = rawAccess(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 1), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, null);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, null);
+
+        assertEquals(new NativeTrustState(ClaimPermission.Access, true, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+    }
+
+    @Test
+    void temporaryManageSupersedesPermissionExpiryAndPreservesAccessFallback()
+            throws Exception
+    {
+        Path file = directory.resolve("manage-supersedes-expiry.properties");
+        long initial = 1_700_000_000_000L;
+        AtomicLong now = new AtomicLong(initial);
+        RawNativeAccess access = rawAccess(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler, now::get, 10);
+        Claim claim = claim(42L, OWNER);
+
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, Duration.ofDays(2));
+
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertEquals(TrustDimension.MANAGER, service.recordsForClaim(42L).get(0).dimension());
+        assertEquals(new NativeTrustState(ClaimPermission.Access, true, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+
+        now.addAndGet(Duration.ofDays(1).toMillis());
+        scheduler.runFuture();
+        assertEquals(new NativeTrustState(ClaimPermission.Access, true, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+
+        now.addAndGet(Duration.ofDays(1).toMillis());
+        scheduler.runFuture();
+        assertEquals(new NativeTrustState(ClaimPermission.Access, false, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
     void externalMutationRemovesPendingTransitionBeforePersistence()
             throws Exception
     {
@@ -700,6 +845,15 @@ class CatCraftTrustServiceTest
         return access;
     }
 
+    private static RawNativeAccess rawAccess(long claimId, UUID owner, NativeTrustState state)
+    {
+        RawNativeAccess access = new RawNativeAccess();
+        access.snapshots.put(claimId, new ClaimSnapshot(claimId, owner, null, false));
+        access.states.put(access.key(claimId, TARGET),
+                new NativeTrustState(state.permission(), state.manager(), false));
+        return access;
+    }
+
     private static Claim claim(long claimId, UUID owner)
     {
         Claim claim = mock(Claim.class);
@@ -750,6 +904,53 @@ class CatCraftTrustServiceTest
         private String key(long claimId, String target, TrustDimension dimension)
         {
             return claimId + "|" + target.toLowerCase() + "|" + dimension;
+        }
+
+        private NativeTrustState state(long claimId, String target, TrustDimension dimension)
+        {
+            return capture(claimId, target, dimension);
+        }
+    }
+
+    /** Represents the native GP claim state and never stores the sidecar marker. */
+    private static final class RawNativeAccess implements ClaimTrustAccess
+    {
+        private final Map<Long, ClaimSnapshot> snapshots = new HashMap<>();
+        private final Map<String, NativeTrustState> states = new HashMap<>();
+
+        @Override
+        public ClaimSnapshot resolve(long claimId)
+        {
+            return snapshots.get(claimId);
+        }
+
+        @Override
+        public NativeTrustState capture(long claimId, String target, TrustDimension dimension)
+        {
+            NativeTrustState state = states.getOrDefault(key(claimId, target),
+                    new NativeTrustState(null, false, false));
+            return new NativeTrustState(state.permission(), state.manager(), false);
+        }
+
+        @Override
+        public void apply(long claimId, String target, NativeTrustState desired,
+                          TrustDimension dimension)
+        {
+            NativeTrustState current = capture(claimId, target, dimension);
+            NativeTrustState merged = dimension == TrustDimension.PERMISSION
+                    ? new NativeTrustState(desired.permission(), current.manager(), false)
+                    : new NativeTrustState(current.permission(), desired.manager(), false);
+            states.put(key(claimId, target), merged);
+        }
+
+        @Override
+        public void save(long claimId)
+        {
+        }
+
+        private String key(long claimId, String target)
+        {
+            return claimId + "|" + target.toLowerCase();
         }
 
         private NativeTrustState state(long claimId, String target, TrustDimension dimension)
