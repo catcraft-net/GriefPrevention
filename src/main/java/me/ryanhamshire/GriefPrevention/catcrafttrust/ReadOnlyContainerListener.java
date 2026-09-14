@@ -10,6 +10,7 @@ import org.bukkit.block.BlockState;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -90,7 +91,16 @@ public final class ReadOnlyContainerListener implements Listener
         if (!safeBuilder(claim, player)) return;
 
         StorageProtectionPolicy.StorageDecision decision = StorageProtectionPolicy.classifyBreak(block);
-        if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY) return;
+        if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY)
+        {
+            ItemStack item = event.getItem();
+            if (item != null && StorageProtectionPolicy.denyPlacement(item))
+            {
+                cancelInteraction(event);
+                deny(player);
+            }
+            return;
+        }
         cancelInteraction(event);
         if (decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
                 || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED)
@@ -261,7 +271,8 @@ public final class ReadOnlyContainerListener implements Listener
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onEntityDamageByEntity(EntityDamageByEntityEvent event)
     {
-        if (!(event.getDamager() instanceof Player player)) return;
+        Player player = responsiblePlayer(event.getDamager());
+        if (player == null) return;
         Entity entity = event.getEntity();
         if (entity instanceof HumanEntity || entity instanceof Merchant
                 || !(entity instanceof InventoryHolder)) return;
@@ -278,7 +289,8 @@ public final class ReadOnlyContainerListener implements Listener
     {
         if (!(event.getVehicle() instanceof InventoryHolder holder)
                 || holder instanceof HumanEntity || holder instanceof Merchant) return;
-        if (!(event.getAttacker() instanceof Player player)) return;
+        Player player = responsiblePlayer(event.getAttacker());
+        if (player == null) return;
         Claim claim = claimAt(event.getVehicle().getLocation());
         if (safeBuilder(claim, player))
         {
@@ -383,6 +395,12 @@ public final class ReadOnlyContainerListener implements Listener
         {
             World world = plugin.getServer().getWorld(session.worldId());
             if (world == null) return false;
+            Location currentLocation = player.getLocation();
+            World currentWorld = currentLocation == null ? null : currentLocation.getWorld();
+            if (currentWorld == null || !Objects.equals(currentWorld.getUID(), session.worldId()))
+            {
+                return false;
+            }
             Block block = world.getBlockAt(session.x(), session.y(), session.z());
             if (block == null) return false;
             StorageProtectionPolicy.StorageDecision decision =
@@ -391,10 +409,14 @@ public final class ReadOnlyContainerListener implements Listener
                     || decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
                     || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
                     || !StorageProtectionPolicy.supportsDetachedView(safeState(block))) return false;
-            Claim claim = claimAt(new Location(world, session.x(), session.y(), session.z()));
-            return claim != null && Objects.equals(claim.getID(), session.claimId())
-                    && Objects.equals(claim.getOwnerID(), session.ownerId())
-                    && safeBuilder(claim, player);
+            Claim sourceClaim = claimAt(new Location(world, session.x(), session.y(), session.z()));
+            Claim currentClaim = claimAt(currentLocation);
+            return sourceClaim != null && currentClaim != null
+                    && Objects.equals(sourceClaim.getID(), session.claimId())
+                    && Objects.equals(sourceClaim.getOwnerID(), session.ownerId())
+                    && Objects.equals(currentClaim.getID(), sourceClaim.getID())
+                    && Objects.equals(currentClaim.getOwnerID(), session.ownerId())
+                    && safeBuilder(currentClaim, player);
         }
         catch (RuntimeException failure)
         {
@@ -530,6 +552,21 @@ public final class ReadOnlyContainerListener implements Listener
         {
             return null;
         }
+    }
+
+    private static @Nullable Player responsiblePlayer(@Nullable Entity source)
+    {
+        try
+        {
+            if (source instanceof Player player) return player;
+            if (source instanceof Projectile projectile
+                    && projectile.getShooter() instanceof Player player) return player;
+        }
+        catch (RuntimeException ignored)
+        {
+            // An unreadable shooter cannot establish authorization.
+        }
+        return null;
     }
 
     private static Inventory safeTop(InventoryEvent event)

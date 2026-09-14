@@ -134,6 +134,10 @@ class StorageProtectionPolicyTest
         when(meta.getBlockState()).thenThrow(new IllegalStateException("unreadable"));
         assertEquals(StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED,
                 StorageProtectionPolicy.classifyPlacement(item));
+
+        when(item.getItemMeta()).thenReturn(null);
+        assertEquals(StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED,
+                StorageProtectionPolicy.classifyPlacement(item));
     }
 
     @Test

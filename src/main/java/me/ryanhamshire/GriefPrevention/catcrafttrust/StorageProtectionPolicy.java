@@ -35,6 +35,7 @@ public final class StorageProtectionPolicy
 
     private static final Set<Material> AUTOMATION_MATERIALS = EnumSet.of(
             Material.HOPPER, Material.DROPPER, Material.DISPENSER, Material.CRAFTER,
+            Material.HOPPER_MINECART, Material.CHEST_MINECART,
             Material.PISTON, Material.STICKY_PISTON, Material.OBSERVER,
             Material.REDSTONE_BLOCK, Material.REDSTONE_TORCH, Material.REDSTONE_WALL_TORCH,
             Material.REPEATER, Material.COMPARATOR, Material.REDSTONE_WIRE, Material.TNT);
@@ -112,7 +113,7 @@ public final class StorageProtectionPolicy
         try
         {
             ItemMeta itemMeta = item.getItemMeta();
-            if (itemMeta == null) return StorageDecision.EMPTY_BREAKABLE;
+            if (itemMeta == null) return StorageDecision.AMBIGUOUS_DENIED;
             if (!(itemMeta instanceof BlockStateMeta meta)) return StorageDecision.AMBIGUOUS_DENIED;
             BlockState state = meta.getBlockState();
             if (state == null) return StorageDecision.AMBIGUOUS_DENIED;

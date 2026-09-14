@@ -10,9 +10,12 @@ import org.bukkit.Server;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.BlockState;
 import org.bukkit.block.Container;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Projectile;
+import org.bukkit.entity.Vehicle;
 import org.bukkit.event.Event;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
@@ -36,7 +39,6 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 import org.bukkit.inventory.InventoryView;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.entity.Vehicle;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
@@ -65,6 +67,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -321,6 +324,112 @@ class ReadOnlyContainerListenerTest
         listener.onVehicleDestroy(destroy);
 
         assertTrue(destroy.isCancelled());
+    }
+
+    @Test
+    void safeBuilderCannotPlaceStorageMinecartsFromEitherHandOnAnOrdinaryRail()
+    {
+        Block rail = mock(Block.class);
+        BlockState railState = mock(BlockState.class);
+        Location railLocation = block.getLocation();
+        when(rail.getType()).thenReturn(Material.RAIL);
+        when(rail.getLocation()).thenReturn(railLocation);
+        when(rail.getState()).thenReturn(railState);
+
+        for (Material material : List.of(Material.HOPPER_MINECART, Material.CHEST_MINECART))
+        {
+            ItemStack item = mock(ItemStack.class);
+            when(item.getType()).thenReturn(material);
+            for (EquipmentSlot hand : List.of(EquipmentSlot.HAND, EquipmentSlot.OFF_HAND))
+            {
+                PlayerInteractEvent event = new PlayerInteractEvent(
+                        player, Action.RIGHT_CLICK_BLOCK, item, rail, BlockFace.UP, hand);
+                listener.onPlayerInteract(event);
+                assertTrue(event.isCancelled(), material + "/" + hand);
+                assertEquals(Event.Result.DENY, event.useInteractedBlock());
+                assertEquals(Event.Result.DENY, event.useItemInHand());
+            }
+        }
+
+        verify(player, times(1)).sendMessage(anyString());
+    }
+
+    @Test
+    void projectileDamageAndVehicleDestroyResolveItsPlayerShooter()
+    {
+        Entity storageEntity = mock(Entity.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(InventoryHolder.class));
+        Location storageLocation = block.getLocation();
+        when(storageEntity.getLocation()).thenReturn(storageLocation);
+        when(storageEntity.getUniqueId()).thenReturn(UUID.randomUUID());
+        when(((InventoryHolder) storageEntity).getInventory()).thenReturn(source);
+
+        Projectile projectile = mock(Projectile.class);
+        when(projectile.getShooter()).thenReturn(player);
+        EntityDamageByEntityEvent damage = mock(EntityDamageByEntityEvent.class);
+        when(damage.getDamager()).thenReturn(projectile);
+        when(damage.getEntity()).thenReturn(storageEntity);
+        java.util.concurrent.atomic.AtomicBoolean cancelled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            cancelled.set(invocation.getArgument(0));
+            return null;
+        }).when(damage).setCancelled(any(Boolean.class));
+        when(damage.isCancelled()).thenAnswer(invocation -> cancelled.get());
+        listener.onEntityDamageByEntity(damage);
+        assertTrue(damage.isCancelled());
+
+        Vehicle vehicle = mock(Vehicle.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(InventoryHolder.class));
+        when(vehicle.getLocation()).thenReturn(storageLocation);
+        when(((InventoryHolder) vehicle).getInventory()).thenReturn(source);
+        VehicleDestroyEvent destroy = new VehicleDestroyEvent(vehicle, projectile);
+        listener.onVehicleDestroy(destroy);
+        assertTrue(destroy.isCancelled());
+    }
+
+    @Test
+    void movingViewerToAnotherWorldOrClaimInvalidatesTheSession()
+    {
+        openPreview();
+        UUID otherWorldId = UUID.randomUUID();
+        World otherWorld = mock(World.class);
+        Claim otherClaim = mock(Claim.class);
+        Location otherLocation = new Location(otherWorld, 100, 70, 100);
+        when(otherWorld.getUID()).thenReturn(otherWorldId);
+        when(player.getLocation()).thenReturn(otherLocation);
+        when(dataStore.getClaimAt(any(Location.class), eq(true), isNull()))
+                .thenAnswer(invocation -> invocation.getArgument(0, Location.class).getWorld() == otherWorld
+                        ? otherClaim : claim);
+        when(otherClaim.getID()).thenReturn(99L);
+        when(otherClaim.getOwnerID()).thenReturn(ownerId);
+        when(trusts.isSafeBuilder(otherClaim, playerId, player)).thenReturn(true);
+
+        InventoryClickEvent worldChanged = new InventoryClickEvent(
+                view(preview), InventoryType.SlotType.CONTAINER, 0,
+                ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(worldChanged);
+        assertTrue(worldChanged.isCancelled());
+        verify(player).closeInventory();
+
+        Location sourceLocation = block.getLocation();
+        when(player.getLocation()).thenReturn(sourceLocation);
+        openPreview();
+        Claim differentClaim = mock(Claim.class);
+        when(differentClaim.getID()).thenReturn(100L);
+        when(differentClaim.getOwnerID()).thenReturn(ownerId);
+        when(dataStore.getClaimAt(any(Location.class), eq(true), isNull()))
+                .thenAnswer(invocation -> invocation.getArgument(0, Location.class).getBlockX() == 10
+                        ? claim : differentClaim);
+        when(trusts.isSafeBuilder(differentClaim, playerId, player)).thenReturn(true);
+        when(player.getLocation()).thenReturn(new Location(world, 20, 64, 20));
+
+        InventoryClickEvent claimChanged = new InventoryClickEvent(
+                view(preview), InventoryType.SlotType.CONTAINER, 0,
+                ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(claimChanged);
+        assertTrue(claimChanged.isCancelled());
+        verify(player, times(2)).closeInventory();
     }
 
     @Test
