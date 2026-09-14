@@ -615,7 +615,7 @@ public class Claim
         }
 
         if (permissionLevel == ClaimPermission.Manage)
-            invalidateAllCatCraftPermissions(playerID);
+            invalidateCatCraftPermission(playerID, TrustDimension.MANAGER);
         else
             invalidateCatCraftPermission(playerID, TrustDimension.PERMISSION);
 

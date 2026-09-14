@@ -138,57 +138,66 @@ public final class CatCraftTrustService
         processDue(nowMillis.getAsLong());
         List<Claim> eligibleClaims = new ArrayList<>();
         Set<String> batchKeys = new HashSet<>();
-        Set<String> supersededKeys = new HashSet<>();
         TrustDimension batchDimension = dimensionFor(kind);
         for (Claim claim : claims)
         {
             if (claim != null && claim.getID() != null)
             {
                 eligibleClaims.add(claim);
-                batchKeys.add(TemporaryTrustRecordKey.key(
-                        claim.getID(), canonicalTarget, batchDimension));
-                if (kind == CatCraftTrustKind.MANAGE)
+                String key = TemporaryTrustRecordKey.key(
+                        claim.getID(), canonicalTarget, batchDimension);
+                if (!batchKeys.add(key))
                 {
-                    supersededKeys.add(TemporaryTrustRecordKey.key(
-                            claim.getID(), canonicalTarget, TrustDimension.PERMISSION));
+                    throw new IllegalArgumentException("duplicate claim in trust batch");
                 }
             }
         }
-        store.ensureCapacity(batchKeys, supersededKeys);
-        List<GrantMutation> mutations = new ArrayList<>();
+        store.ensureCapacity(batchKeys);
+        boolean persistRecord = duration != null || kind == CatCraftTrustKind.BUILD;
+        long expiresAt = duration == null ? 0L : safeExpiry(nowMillis.getAsLong(), duration);
+        List<GrantPreparation> preparations = new ArrayList<>();
         for (Claim claim : eligibleClaims)
         {
-            if (claim == null || claim.getID() == null) continue;
             long claimId = claim.getID();
             ClaimSnapshot snapshot = snapshotFor(claim);
             TrustDimension dimension = dimensionFor(kind);
             Optional<TemporaryTrustRecord> previousRecord = store.get(claimId, canonicalTarget, dimension);
-            if (kind == CatCraftTrustKind.MANAGE)
-            {
-                store.removeTarget(claimId, canonicalTarget, TrustDimension.PERMISSION);
-            }
             NativeTrustState current = captureForRecord(claimId, canonicalTarget, dimension,
                     previousRecord.orElse(null));
             NativeTrustState baseline = previousRecord.isPresent()
-                    && current.equals(previousRecord.get().expectedState())
+                    && matchesRecordState(current, previousRecord.get().expectedState(), dimension)
                     ? replacementBaseline(previousRecord.get()) : current;
             NativeTrustState expected = desiredState(kind, current);
             TemporaryTrustRecord precedingRecord = previousRecord.isPresent()
-                    && current.equals(previousRecord.get().expectedState())
+                    && matchesRecordState(current, previousRecord.get().expectedState(), dimension)
                     ? previousRecord.get() : null;
-            TemporaryTrustRecord intendedRecord = null;
-            if (duration != null || kind == CatCraftTrustKind.BUILD)
-            {
-                long expiresAt = duration == null ? 0L : safeExpiry(nowMillis.getAsLong(), duration);
-                intendedRecord = new TemporaryTrustRecord(
-                        claimId, canonicalTarget, kind, dimension, baseline, expected,
-                        expiresAt, store.nextRevision(), snapshot.ownerId());
-            }
-            String key = TemporaryTrustRecordKey.key(claimId, canonicalTarget, dimension);
-            store.beginTransition(new TrustTransition(key, precedingRecord, current,
-                    intendedRecord, expected));
-            mutations.add(new GrantMutation(claimId, canonicalTarget, dimension, expected, key));
+            preparations.add(new GrantPreparation(claimId, canonicalTarget, dimension, snapshot,
+                    precedingRecord, current, baseline, expected));
         }
+        RevisionReservation reservation = store.reserveRevisions(persistRecord
+                ? preparations.size() : 0);
+        List<TrustTransition> transitions = new ArrayList<>(preparations.size());
+        List<GrantMutation> mutations = new ArrayList<>();
+        int recordIndex = 0;
+        for (GrantPreparation preparation : preparations)
+        {
+            TemporaryTrustRecord intendedRecord = null;
+            if (persistRecord)
+            {
+                intendedRecord = new TemporaryTrustRecord(
+                        preparation.claimId(), preparation.target(), kind, preparation.dimension(),
+                        preparation.baseline(), preparation.expected(), expiresAt,
+                        reservation.revisionAt(recordIndex++), preparation.snapshot().ownerId());
+            }
+            String key = TemporaryTrustRecordKey.key(preparation.claimId(), preparation.target(),
+                    preparation.dimension());
+            transitions.add(new TrustTransition(key, preparation.precedingRecord(), preparation.current(),
+                    intendedRecord, preparation.expected()));
+            mutations.add(new GrantMutation(preparation.claimId(), preparation.target(),
+                    preparation.dimension(), preparation.expected(), key));
+        }
+
+        store.commitPreparedTransitions(transitions, reservation);
 
         store.save();
         try
@@ -250,11 +259,15 @@ public final class CatCraftTrustService
             String managerKey = TemporaryTrustRecordKey.key(
                     claimId, canonicalTarget, TrustDimension.MANAGER);
             store.beginTransition(new TrustTransition(permissionKey,
-                    previousPermission.isPresent() && permission.equals(previousPermission.get().expectedState())
+                    previousPermission.isPresent()
+                            && matchesRecordState(permission, previousPermission.get().expectedState(),
+                            TrustDimension.PERMISSION)
                             ? previousPermission.get() : null,
                     permission, null, intendedPermission));
             store.beginTransition(new TrustTransition(managerKey,
-                    previousManager.isPresent() && manager.equals(previousManager.get().expectedState())
+                    previousManager.isPresent()
+                            && matchesRecordState(manager, previousManager.get().expectedState(),
+                            TrustDimension.MANAGER)
                             ? previousManager.get() : null,
                     manager, null, intendedManager));
             mutations.add(new RevokeMutation(claimId, canonicalTarget,
@@ -409,16 +422,114 @@ public final class CatCraftTrustService
             expirationHandle.cancel();
             expirationHandle = null;
         }
+        List<ExpirationPreparation> preparations = new ArrayList<>();
+        Set<String> preparedKeys = new HashSet<>();
         int processed = 0;
         while (processed < maximumExpirationsPerTick)
         {
-            Optional<TemporaryTrustRecord> next = store.nextExpiring();
+            Optional<TemporaryTrustRecord> next = store.nextExpiring(preparedKeys);
             if (next.isEmpty() || next.get().expiresAtMillis() > now) break;
-            TemporaryTrustRecord record = next.get();
-            if (expire(record)) processed++;
-            else break;
+            preparedKeys.add(next.get().key());
+            try
+            {
+                preparations.add(prepareExpiration(next.get()));
+                processed++;
+            }
+            catch (RuntimeException failure)
+            {
+                logger.severe("Could not inspect expired CatCraft trust: " + failure.getMessage());
+                break;
+            }
+        }
+        List<ExpirationMutation> mutations = new ArrayList<>();
+        int markerCount = (int) preparations.stream().filter(ExpirationPreparation::restoreMarker).count();
+        RevisionReservation reservation;
+        try
+        {
+            reservation = store.reserveRevisions(markerCount);
+            int markerIndex = 0;
+            for (ExpirationPreparation preparation : preparations)
+            {
+                if (!preparation.transition()) continue;
+                TemporaryTrustRecord record = preparation.record();
+                TemporaryTrustRecord marker = null;
+                if (preparation.restoreMarker())
+                {
+                    NativeTrustState markerState = record.previousState();
+                    marker = new TemporaryTrustRecord(record.claimId(), record.target(),
+                            CatCraftTrustKind.BUILD, TrustDimension.PERMISSION, markerState, markerState,
+                            0L, reservation.revisionAt(markerIndex++), record.ownerIdAtGrant());
+                }
+                mutations.add(new ExpirationMutation(record, preparation.current(),
+                        new TrustTransition(record.key(), record, record.expectedState(),
+                                marker, record.previousState())));
+            }
+            store.commitPreparedTransitions(mutations.stream().map(ExpirationMutation::transition).toList(),
+                    reservation);
+        }
+        catch (RuntimeException failure)
+        {
+            logger.severe("Could not prepare expired CatCraft trust: " + failure.getMessage());
+            for (ExpirationMutation mutation : mutations) store.abortTransition(mutation.record().key());
+            scheduleDueOrNext(now);
+            return;
+        }
+        if (!mutations.isEmpty())
+        {
+            try
+            {
+                store.save();
+            }
+            catch (IOException failure)
+            {
+                logger.severe("Could not journal expired CatCraft trust: " + failure.getMessage());
+                for (ExpirationMutation mutation : mutations) store.abortTransition(mutation.record().key());
+                scheduleDueOrNext(now);
+                return;
+            }
+            for (ExpirationPreparation preparation : preparations)
+            {
+                if (!preparation.removeMetadata()) continue;
+                TemporaryTrustRecord record = preparation.record();
+                store.removeIfRevision(record.key(), record.revision());
+            }
+            for (ExpirationMutation mutation : mutations)
+            {
+                try
+                {
+                    if (!matchesRecordState(mutation.current(), mutation.record().previousState(),
+                            mutation.record().dimension()))
+                    {
+                        TemporaryTrustRecord record = mutation.record();
+                        withInternalMutation(() -> claimAccess.apply(record.claimId(), record.target(),
+                                record.previousState(), record.dimension()));
+                        claimAccess.save(record.claimId());
+                    }
+                    store.completeTransition(mutation.record().key());
+                }
+                catch (RuntimeException failure)
+                {
+                    logger.severe("Could not restore expired CatCraft trust for claim "
+                            + mutation.record().claimId() + ": " + failure.getMessage());
+                    break;
+                }
+            }
+        }
+        else
+        {
+            for (ExpirationPreparation preparation : preparations)
+            {
+                if (!preparation.removeMetadata()) continue;
+                TemporaryTrustRecord record = preparation.record();
+                store.removeIfRevision(record.key(), record.revision());
+            }
         }
         if (processed > 0) persistBestEffort();
+        scheduleDueOrNext(now);
+    }
+
+    private void scheduleDueOrNext(long now)
+    {
         Optional<TemporaryTrustRecord> next = store.nextExpiring();
         if (next.isPresent() && next.get().expiresAtMillis() <= now)
         {
@@ -430,48 +541,27 @@ public final class CatCraftTrustService
         }
     }
 
-    private boolean expire(TemporaryTrustRecord record)
+    private ExpirationPreparation prepareExpiration(TemporaryTrustRecord record)
     {
         ClaimSnapshot snapshot = claimAccess.resolve(record.claimId());
         if (snapshot == null || !Objects.equals(snapshot.ownerId(), record.ownerIdAtGrant()))
         {
-            store.removeIfRevision(record.key(), record.revision());
-            return true;
+            return new ExpirationPreparation(record, record.expectedState(), true, false, false);
         }
         NativeTrustState current = captureForRecord(record.claimId(), record.target(),
                 record.dimension(), record);
-        if (current.equals(record.previousState()))
+        boolean expected = matchesRecordState(current, record.expectedState(), record.dimension());
+        boolean previous = matchesRecordState(current, record.previousState(), record.dimension());
+        if (!expected && !previous)
         {
-            store.removeIfRevision(record.key(), record.revision());
-            return true;
+            return new ExpirationPreparation(record, current, true, false, false);
         }
-        if (!current.equals(record.expectedState()))
+        boolean restoreMarker = restoresPermanentBuildMarker(record);
+        if (previous && !restoreMarker)
         {
-            store.removeIfRevision(record.key(), record.revision());
-            return true;
+            return new ExpirationPreparation(record, current, true, false, false);
         }
-        try
-        {
-            withInternalMutation(() -> claimAccess.apply(record.claimId(), record.target(),
-                    record.previousState(), record.dimension()));
-            claimAccess.save(record.claimId());
-            store.removeIfRevision(record.key(), record.revision());
-            if (restoresPermanentBuildMarker(record))
-            {
-                NativeTrustState markerState = record.previousState();
-                store.put(new TemporaryTrustRecord(record.claimId(), record.target(),
-                        CatCraftTrustKind.BUILD, TrustDimension.PERMISSION,
-                        markerState, markerState, 0L, store.nextRevision(),
-                        record.ownerIdAtGrant()));
-            }
-            return true;
-        }
-        catch (RuntimeException failure)
-        {
-            logger.severe("Could not restore expired CatCraft trust for claim "
-                    + record.claimId() + ": " + failure.getMessage());
-            return false;
-        }
+        return new ExpirationPreparation(record, current, false, restoreMarker, true);
     }
 
     private NativeTrustState captureForRecord(long claimId,
@@ -493,8 +583,8 @@ public final class CatCraftTrustService
         String target = targetFromKey(transition.key());
         TrustDimension dimension = dimensionFromKey(transition.key());
         NativeTrustState raw = claimAccess.capture(claimId, target, dimension);
-        boolean matchesPreceding = sameNativeState(raw, transition.precedingState());
-        boolean matchesIntended = sameNativeState(raw, transition.intendedState());
+        boolean matchesPreceding = matchesNativeState(raw, transition.precedingState(), dimension);
+        boolean matchesIntended = matchesNativeState(raw, transition.intendedState(), dimension);
         boolean safeBuild = ifSafeBuildState(raw, transition, matchesPreceding, matchesIntended);
         return withSafeBuild(raw, safeBuild);
     }
@@ -516,9 +606,24 @@ public final class CatCraftTrustService
         return false;
     }
 
-    private static boolean sameNativeState(NativeTrustState left, NativeTrustState right)
+    private static boolean matchesNativeState(NativeTrustState left, NativeTrustState right,
+                                              TrustDimension dimension)
     {
-        return left.permission() == right.permission() && left.manager() == right.manager();
+        return dimension == TrustDimension.PERMISSION
+                ? left.permission() == right.permission()
+                : left.manager() == right.manager();
+    }
+
+    private static boolean matchesRecordState(NativeTrustState actual,
+                                              NativeTrustState expected,
+                                              TrustDimension dimension)
+    {
+        if (dimension == TrustDimension.PERMISSION)
+        {
+            return actual.permission() == expected.permission()
+                    && actual.safeBuild() == expected.safeBuild();
+        }
+        return actual.manager() == expected.manager();
     }
 
     private static NativeTrustState withSafeBuild(NativeTrustState raw, boolean safeBuild)
@@ -559,11 +664,12 @@ public final class CatCraftTrustService
                 continue;
             }
             NativeTrustState current = captureTransitionState(transition);
-            if (current.equals(transition.intendedState()))
+            TrustDimension dimension = dimensionFromKey(transition.key());
+            if (matchesRecordState(current, transition.intendedState(), dimension))
             {
                 store.completeTransition(transition.key());
             }
-            else if (current.equals(transition.precedingState()))
+            else if (matchesRecordState(current, transition.precedingState(), dimension))
             {
                 store.abortTransition(transition.key());
             }
@@ -584,7 +690,7 @@ public final class CatCraftTrustService
             }
             NativeTrustState current = captureForRecord(record.claimId(), record.target(),
                     record.dimension(), record);
-            if (!current.equals(record.expectedState()))
+            if (!matchesRecordState(current, record.expectedState(), record.dimension()))
             {
                 store.removeIfRevision(record.key(), record.revision());
                 changed = true;
@@ -607,7 +713,7 @@ public final class CatCraftTrustService
         {
             NativeTrustState current = captureForRecord(claimId, record.target(),
                     record.dimension(), record);
-            if (current.equals(record.expectedState())) return true;
+            if (matchesRecordState(current, record.expectedState(), record.dimension())) return true;
             store.removeIfRevision(record.key(), record.revision());
         }
         if (snapshot.restricted() || snapshot.parentId() == null) return false;
@@ -762,6 +868,25 @@ public final class CatCraftTrustService
 
     private record GrantMutation(long claimId, String target, TrustDimension dimension,
                                  NativeTrustState expectedState, String key)
+    {
+    }
+
+    private record GrantPreparation(long claimId, String target, TrustDimension dimension,
+                                    ClaimSnapshot snapshot,
+                                    @Nullable TemporaryTrustRecord precedingRecord,
+                                    NativeTrustState current, NativeTrustState baseline,
+                                    NativeTrustState expected)
+    {
+    }
+
+    private record ExpirationPreparation(TemporaryTrustRecord record, NativeTrustState current,
+                                         boolean removeMetadata, boolean restoreMarker,
+                                         boolean transition)
+    {
+    }
+
+    private record ExpirationMutation(TemporaryTrustRecord record, NativeTrustState current,
+                                      TrustTransition transition)
     {
     }
 

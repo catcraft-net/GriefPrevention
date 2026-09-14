@@ -51,7 +51,7 @@ A BuildTrust target receives native Access permission in the claim plus a CatCra
 
 The Access fallback is intentional. If the server later runs an older GriefPrevention JAR, unknown CatCraft metadata is ignored and the target falls back to AccessTrust rather than retaining building or container access.
 
-An ordinary permanent `/trust`, `/containertrust`, `/accesstrust`, or `/permissiontrust` command replaces the safe-build marker. `/untrust` removes it. Direct `Claim` permission mutations by another plugin invalidate temporary metadata when the claim is live, preventing an old expiry from undoing the external decision.
+An ordinary permanent `/trust`, `/containertrust`, or `/accesstrust` command replaces the permission-dimension safe-build marker. `/permissiontrust` changes only the independent manager dimension and preserves the safe-build marker and other permission-dimension metadata. `/untrust` removes both dimensions. Direct `Claim` permission mutations by another plugin invalidate only the affected temporary dimension when the claim is live, preventing an old expiry from undoing the external decision.
 
 Permission inheritance for subdivisions follows GriefPrevention's existing rules. A restricted subdivision uses only its own marker and permissions. An unrestricted subdivision may inherit a safe-build marker from its parent in the same way it inherits normal permissions.
 

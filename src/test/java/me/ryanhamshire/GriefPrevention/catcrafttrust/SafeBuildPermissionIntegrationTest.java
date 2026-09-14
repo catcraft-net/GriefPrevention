@@ -26,6 +26,7 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SafeBuildPermissionIntegrationTest
 {
@@ -194,7 +195,7 @@ class SafeBuildPermissionIntegrationTest
     }
 
     @Test
-    void externalManagerAssignmentAlsoReplacesSafeBuildMetadata()
+    void externalManagerAssignmentInvalidatesOnlyManagerMetadata()
     {
         Claim claim = claim(42L, OWNER);
         claim.inDataStore = true;
@@ -202,7 +203,27 @@ class SafeBuildPermissionIntegrationTest
 
         claim.setPermission(target, ClaimPermission.Manage);
 
-        verify(service).onExternalTargetMutation(claim, target);
+        verify(service).onExternalPermissionMutation(claim, target, TrustDimension.MANAGER);
+        verify(service, never()).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
+        verify(service, never()).onExternalTargetMutation(any(), any());
+    }
+
+    @Test
+    void externalManagerAssignmentPreservesRealSafeBuildMarker() throws Exception
+    {
+        Claim claim = claim(42L, OWNER);
+        claim.inDataStore = true;
+        CatCraftTrustService realService = startRealService(claim);
+        String target = BUILDER.toString();
+
+        realService.grant(List.of(claim), target, CatCraftTrustKind.BUILD, null);
+        claim.setPermission(target, ClaimPermission.Manage);
+
+        assertTrue(realService.isSafeBuilder(claim, BUILDER, null));
+        assertNull(check(claim, BUILDER, ClaimPermission.Build));
+        assertNull(check(claim, BUILDER, ClaimPermission.Access));
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(claim, BUILDER, ClaimPermission.Manage));
     }
 
     @Test

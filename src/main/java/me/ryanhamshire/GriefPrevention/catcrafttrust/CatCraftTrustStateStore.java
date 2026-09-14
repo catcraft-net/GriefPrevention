@@ -210,6 +210,62 @@ public final class CatCraftTrustStateStore
         transitions.put(transition.key(), transition);
     }
 
+    /**
+     * Reserves revision numbers without changing the store.  The matching
+     * commit is what advances the cursor, so a failed multi-claim preparation
+     * cannot consume revisions or leave a partial transition behind.
+     */
+    synchronized RevisionReservation reserveRevisions(int count)
+    {
+        if (count < 0) throw new IllegalArgumentException("count must be non-negative");
+        if (count > 0 && nextRevision > Long.MAX_VALUE - count)
+        {
+            throw new IllegalStateException("trust revision exhausted");
+        }
+        return new RevisionReservation(nextRevision, count);
+    }
+
+    synchronized void commitPreparedTransitions(Collection<TrustTransition> prepared,
+                                                 RevisionReservation reservation)
+    {
+        Objects.requireNonNull(prepared, "prepared");
+        Objects.requireNonNull(reservation, "reservation");
+        List<TrustTransition> transitionsToCommit = List.copyOf(prepared);
+        if (reservation.firstRevision() != nextRevision)
+        {
+            throw new IllegalStateException("trust revision reservation is stale");
+        }
+        Set<String> keys = new HashSet<>();
+        int intendedCount = 0;
+        long expectedRevision = reservation.firstRevision();
+        for (TrustTransition transition : transitionsToCommit)
+        {
+            if (transition == null || !keys.add(transition.key()))
+            {
+                throw new IllegalArgumentException("duplicate or null trust transition");
+            }
+            if (transition.intendedRecord() != null)
+            {
+                intendedCount++;
+                if (transition.intendedRecord().revision() != expectedRevision)
+                {
+                    throw new IllegalArgumentException("trust transition revision mismatch");
+                }
+                expectedRevision++;
+            }
+        }
+        if (intendedCount != reservation.count() || expectedRevision != reservation.nextRevisionExclusive())
+        {
+            throw new IllegalArgumentException("trust revision reservation count mismatch");
+        }
+        ensureCapacity(keys);
+        for (TrustTransition transition : transitionsToCommit)
+        {
+            this.transitions.put(transition.key(), transition);
+        }
+        nextRevision = reservation.nextRevisionExclusive();
+    }
+
     synchronized void ensureCapacity(Collection<String> keys)
     {
         ensureCapacity(keys, Set.of());
@@ -305,19 +361,39 @@ public final class CatCraftTrustStateStore
 
     public synchronized Optional<TemporaryTrustRecord> nextExpiring()
     {
+        return nextExpiring(Set.of());
+    }
+
+    synchronized Optional<TemporaryTrustRecord> nextExpiring(Set<String> excludedKeys)
+    {
+        Objects.requireNonNull(excludedKeys, "excludedKeys");
+        if (!excludedKeys.isEmpty())
+        {
+            return expirationQueue.stream()
+                    .filter(expiry -> !excludedKeys.contains(expiry.key()))
+                    .filter(this::isCurrentExpiry)
+                    .min(Comparator.comparingLong(ExpiryKey::expiresAt)
+                            .thenComparingLong(ExpiryKey::revision))
+                    .map(expiry -> records.get(expiry.key()));
+        }
         while (!expirationQueue.isEmpty())
         {
             ExpiryKey expiry = expirationQueue.peek();
-            TemporaryTrustRecord current = records.get(expiry.key());
-            if (current == null || current.revision() != expiry.revision()
-                    || current.expiresAtMillis() != expiry.expiresAt() || current.expiresAtMillis() <= 0)
+            if (!isCurrentExpiry(expiry))
             {
                 expirationQueue.poll();
                 continue;
             }
-            return Optional.of(current);
+            return Optional.of(records.get(expiry.key()));
         }
         return Optional.empty();
+    }
+
+    private boolean isCurrentExpiry(ExpiryKey expiry)
+    {
+        TemporaryTrustRecord current = records.get(expiry.key());
+        return current != null && current.revision() == expiry.revision()
+                && current.expiresAtMillis() == expiry.expiresAt() && current.expiresAtMillis() > 0;
     }
 
     public synchronized long nextRevision()
@@ -797,6 +873,30 @@ public final class CatCraftTrustStateStore
                                Map<String, TrustTransition> transitions,
                                long nextRevision)
     {
+    }
+}
+
+record RevisionReservation(long firstRevision, int count)
+{
+    RevisionReservation
+    {
+        if (firstRevision <= 0) throw new IllegalArgumentException("firstRevision must be positive");
+        if (count < 0) throw new IllegalArgumentException("count must be non-negative");
+        if (count > 0 && firstRevision > Long.MAX_VALUE - count)
+        {
+            throw new IllegalArgumentException("revision reservation overflows");
+        }
+    }
+
+    long nextRevisionExclusive()
+    {
+        return firstRevision + count;
+    }
+
+    long revisionAt(int index)
+    {
+        if (index < 0 || index >= count) throw new IndexOutOfBoundsException(index);
+        return firstRevision + index;
     }
 }
 
