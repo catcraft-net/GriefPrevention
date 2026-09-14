@@ -9,6 +9,8 @@ import me.ryanhamshire.GriefPrevention.events.TrustChangedEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
+import org.bukkit.command.PluginCommand;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.PluginManager;
 import org.mockito.ArgumentCaptor;
@@ -17,6 +19,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -24,6 +27,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.Vector;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
@@ -32,6 +36,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doCallRealMethod;
 import static org.mockito.Mockito.mock;
@@ -152,6 +157,131 @@ class TrustCommandIntegrationTest
 
         assertTrue(plugin.onCommand(player, command, "buildtrust", new String[]{"public"}));
         verify(service, never()).grant(anyCollection(), anyString(), any(), any());
+    }
+
+    @Test
+    void allLegacyGrantCommandsOutsideClaimsUseOneBatchWithTheirOwnKind()
+            throws Exception
+    {
+        Claim first = mockClaim(46L);
+        Claim second = mockClaim(47L);
+        PlayerData data = mock(PlayerData.class);
+        when(data.getClaims()).thenReturn(new Vector<>(List.of(first, second)));
+        when(dataStore.getPlayerData(PLAYER_ID)).thenReturn(data);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(null);
+
+        List<String> commandNames = List.of("trust", "accesstrust", "containertrust", "permissiontrust");
+        List<CatCraftTrustKind> kinds = List.of(CatCraftTrustKind.FULL, CatCraftTrustKind.ACCESS,
+                CatCraftTrustKind.CONTAINER, CatCraftTrustKind.MANAGE);
+        for (int index = 0; index < commandNames.size(); index++)
+        {
+            clearInvocations(service, pluginManager);
+            when(command.getName()).thenReturn(commandNames.get(index));
+            assertTrue(plugin.onCommand(player, command, commandNames.get(index), new String[]{"public"}));
+            verify(pluginManager).callEvent(any(TrustChangedEvent.class));
+            verify(service).grant(argThat(claims -> claims.size() == 2 && claims.containsAll(List.of(first, second))),
+                    eq("public"), eq(kinds.get(index)), isNull(Duration.class));
+        }
+    }
+
+    @Test
+    void grantEventsExposeLegacyPermissionPayloadForEveryTrustKind()
+            throws Exception
+    {
+        Claim current = mockClaim(48L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+        List<String> commandNames = List.of("buildtrust", "accesstrust", "containertrust", "trust", "permissiontrust");
+        List<CatCraftTrustKind> kinds = List.of(CatCraftTrustKind.BUILD, CatCraftTrustKind.ACCESS,
+                CatCraftTrustKind.CONTAINER, CatCraftTrustKind.FULL, CatCraftTrustKind.MANAGE);
+        List<ClaimPermission> permissions = new ArrayList<>(List.of(ClaimPermission.Access, ClaimPermission.Access,
+                ClaimPermission.Inventory, ClaimPermission.Build));
+        permissions.add(null);
+        ArgumentCaptor<TrustChangedEvent> events = ArgumentCaptor.forClass(TrustChangedEvent.class);
+
+        for (int index = 0; index < commandNames.size(); index++)
+        {
+            clearInvocations(service, pluginManager);
+            when(command.getName()).thenReturn(commandNames.get(index));
+            assertTrue(plugin.onCommand(player, command, commandNames.get(index), new String[]{"public"}));
+            verify(pluginManager).callEvent(events.capture());
+            TrustChangedEvent event = events.getValue();
+            assertEquals(permissions.get(index), event.getClaimPermission());
+            assertTrue(event.isGiven());
+            assertEquals("public", event.getIdentifier());
+            assertTrue(event.getClaims().contains(current));
+            verify(service).grant(anyCollection(), eq("public"), eq(kinds.get(index)), isNull(Duration.class));
+        }
+    }
+
+    @Test
+    void buildTrustErrorsUseCatCraftPrefixWhenClaimIsMissingOrNotManageable()
+            throws Exception
+    {
+        when(command.getName()).thenReturn("buildtrust");
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(null);
+        assertTrue(plugin.onCommand(player, command, "buildtrust", new String[]{"public"}));
+
+        Claim current = mockClaim(49L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+        when(current.checkPermission(player, ClaimPermission.Manage, null)).thenReturn(() -> "denied");
+        assertTrue(plugin.onCommand(player, command, "buildtrust", new String[]{"public"}));
+
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        verify(player, org.mockito.Mockito.atLeast(2)).sendMessage(messages.capture());
+        String output = String.join("\n", messages.getAllValues());
+        assertTrue(output.contains("[CatCraft]"));
+        assertTrue(output.contains("BuildTrust"));
+    }
+
+    @Test
+    void grantSuccessUsesCatCraftPrefixKindAndPermanentOrTimedDuration()
+            throws Exception
+    {
+        Claim current = mockClaim(50L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+
+        when(command.getName()).thenReturn("buildtrust");
+        assertTrue(plugin.onCommand(player, command, "buildtrust", new String[]{"public"}));
+        ArgumentCaptor<String> permanentMessages = ArgumentCaptor.forClass(String.class);
+        verify(player, org.mockito.Mockito.atLeastOnce()).sendMessage(permanentMessages.capture());
+        String permanentOutput = String.join("\n", permanentMessages.getAllValues());
+        assertTrue(permanentOutput.contains("[CatCraft]"));
+        assertTrue(permanentOutput.contains("Build Trust"));
+        assertTrue(permanentOutput.contains("Forever"));
+
+        clearInvocations(player, service);
+        when(command.getName()).thenReturn("trust");
+        assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public", "1d"}));
+        ArgumentCaptor<String> timedMessages = ArgumentCaptor.forClass(String.class);
+        verify(player, org.mockito.Mockito.atLeastOnce()).sendMessage(timedMessages.capture());
+        String timedOutput = String.join("\n", timedMessages.getAllValues());
+        assertTrue(timedOutput.contains("[CatCraft]"));
+        assertTrue(timedOutput.contains("Full Trust"));
+        assertTrue(timedOutput.contains("1d"));
+    }
+
+    @Test
+    void setUpCommandsRegistersOneCompleterOnEveryTrustPluginCommand()
+            throws Exception
+    {
+        PluginCommand claimCommand = mock(PluginCommand.class);
+        when(plugin.getCommand("claim")).thenReturn(claimCommand);
+        List<PluginCommand> trustCommands = new ArrayList<>();
+        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust"))
+        {
+            PluginCommand trustCommand = mock(PluginCommand.class);
+            trustCommands.add(trustCommand);
+            when(plugin.getCommand(commandName)).thenReturn(trustCommand);
+        }
+
+        Method setup = GriefPrevention.class.getDeclaredMethod("setUpCommands");
+        setup.setAccessible(true);
+        setup.invoke(plugin);
+
+        for (PluginCommand trustCommand : trustCommands)
+        {
+            verify(trustCommand).setTabCompleter(any(TabCompleter.class));
+        }
     }
 
     @Test

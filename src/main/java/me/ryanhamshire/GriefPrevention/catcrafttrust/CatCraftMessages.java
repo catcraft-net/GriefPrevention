@@ -27,4 +27,19 @@ public final class CatCraftMessages
     {
         return PREFIX + " &eTrust service is unavailable.";
     }
+
+    public static String buildTrustNoClaim()
+    {
+        return PREFIX + " &eYou must be standing in a claim to use BuildTrust.";
+    }
+
+    public static String buildTrustUnauthorized()
+    {
+        return PREFIX + " &eYou cannot manage this claim.";
+    }
+
+    public static String grantSuccess(String target, String kind, String duration, String scope)
+    {
+        return PREFIX + " &aGranted " + kind + " to " + target + " for " + duration + " (" + scope + ").";
+    }
 }

@@ -91,4 +91,25 @@ class TrustTabCompletionIntegrationTest
                 plugin.onTabComplete(console, command, "buildtrust", new String[]{"x", "1h", "extra"}));
         verify(server, never()).getOnlinePlayers();
     }
+
+    @Test
+    void nonTrustCommandsReturnNullForBukkitFallbackCompletion()
+    {
+        when(command.getName()).thenReturn("claimslist");
+        assertEquals(null, plugin.onTabComplete(viewer, command, "claimslist", new String[]{"a"}));
+        verify(server, never()).getOnlinePlayers();
+    }
+
+    @Test
+    void trustAliasesStillUseTheirCanonicalCommandCompletion()
+    {
+        Player alice = mock(Player.class);
+        when(alice.getName()).thenReturn("Alice");
+        when(viewer.canSee(alice)).thenReturn(true);
+        doReturn(List.of(alice)).when(server).getOnlinePlayers();
+        when(command.getName()).thenReturn("permissiontrust");
+
+        assertEquals(List.of("Alice"), plugin.onTabComplete(viewer, command, "pt", new String[]{"a"}));
+        assertEquals(List.of("Alice"), plugin.onTabComplete(viewer, command, "managetrust", new String[]{"a"}));
+    }
 }

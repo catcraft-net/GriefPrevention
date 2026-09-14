@@ -1005,6 +1005,7 @@ public class GriefPrevention extends JavaPlugin
     @Override
     public @Nullable List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args)
     {
+        if (!isTrustGrantCommand(command.getName())) return null;
         return this.completeTrustCommand(command.getName(), sender, args);
     }
 
@@ -2510,13 +2511,13 @@ public class GriefPrevention extends JavaPlugin
         Claim claim = this.dataStore.getClaimAt(player.getLocation(), true /*ignore height*/, null);
         if (request.kind() == CatCraftTrustKind.BUILD && claim == null)
         {
-            GriefPrevention.sendMessage(player, TextMode.Err, Messages.GrantPermissionNoClaim);
+            sendCatCraftMessage(player, CatCraftMessages.buildTrustNoClaim());
             return;
         }
         if (request.kind() == CatCraftTrustKind.BUILD
                 && claim.checkPermission(player, ClaimPermission.Manage, null) != null)
         {
-            GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoPermissionTrust, claim.getOwnerName());
+            sendCatCraftMessage(player, CatCraftMessages.buildTrustUnauthorized());
             return;
         }
 
@@ -2597,7 +2598,11 @@ public class GriefPrevention extends JavaPlugin
         }
 
         ClaimPermission nativePermission = nativePermissionFor(request.kind());
-        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, nativePermission, true, identifierToAdd);
+        // PermissionTrust historically exposed a null event level even though the
+        // native operation is Manage. Preserve that public payload while routing
+        // the independent MANAGE trust kind to the service.
+        ClaimPermission eventPermission = request.kind() == CatCraftTrustKind.MANAGE ? null : nativePermission;
+        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, eventPermission, true, identifierToAdd);
         Bukkit.getPluginManager().callEvent(event);
         if (event.isCancelled()) return;
         if (event.getClaims().isEmpty())
@@ -2629,19 +2634,34 @@ public class GriefPrevention extends JavaPlugin
 
         if (recipientName.equalsIgnoreCase("public"))
             recipientName = this.dataStore.getMessage(Messages.CollectivePublic);
-        String permissionDescription = switch (request.kind())
-        {
-            case BUILD -> this.dataStore.getMessage(Messages.BuildPermission);
-            case ACCESS -> this.dataStore.getMessage(Messages.AccessPermission);
-            case CONTAINER -> this.dataStore.getMessage(Messages.ContainersPermission);
-            case FULL -> this.dataStore.getMessage(Messages.BuildPermission);
-            case MANAGE -> this.dataStore.getMessage(Messages.PermissionsPermission);
-        };
+        String permissionDescription = trustKindDescription(request.kind());
         String location = claim == null
                 ? this.dataStore.getMessage(Messages.LocationAllClaims)
                 : this.dataStore.getMessage(Messages.LocationCurrentClaim);
-        GriefPrevention.sendMessage(player, TextMode.Success, Messages.GrantPermissionConfirmation,
-                recipientName, permissionDescription, location);
+        sendCatCraftMessage(player, CatCraftMessages.grantSuccess(recipientName, permissionDescription,
+                trustDurationDescription(request.duration()), location));
+    }
+
+    private static String trustKindDescription(CatCraftTrustKind kind)
+    {
+        return switch (kind)
+        {
+            case BUILD -> "Build Trust";
+            case ACCESS -> "Access Trust";
+            case CONTAINER -> "Container Trust";
+            case FULL -> "Full Trust";
+            case MANAGE -> "Permission Trust";
+        };
+    }
+
+    private static String trustDurationDescription(Duration duration)
+    {
+        if (duration == null || duration.isZero()) return "Forever";
+        long minutes = duration.toMinutes();
+        if (minutes % (7L * 24L * 60L) == 0L) return (minutes / (7L * 24L * 60L)) + "w";
+        if (minutes % (24L * 60L) == 0L) return (minutes / (24L * 60L)) + "d";
+        if (minutes % 60L == 0L) return (minutes / 60L) + "h";
+        return minutes + "m";
     }
 
     private static boolean isValidTrustTarget(String target)
