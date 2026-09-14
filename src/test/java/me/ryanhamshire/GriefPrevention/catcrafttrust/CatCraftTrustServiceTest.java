@@ -522,6 +522,29 @@ class CatCraftTrustServiceTest
         assertTrue(service.recordsForClaim(2L).isEmpty());
     }
 
+    @Test
+    void canonicalTargetContainingPipeSurvivesTransitionSaveLoadAndStartup()
+            throws Exception
+    {
+        String pipeTarget = "[catcraft|builders]";
+        Path file = directory.resolve("pipe-target.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler,
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+
+        service.grant(List.of(claim), pipeTarget, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        CatCraftTrustService restarted = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        restarted.start();
+
+        assertEquals(pipeTarget.toLowerCase(), restarted.recordsForClaim(42L).get(0).target());
+    }
+
     private CatCraftTrustService service(FakeAccess access, FakeScheduler scheduler,
                                          AtomicLong now, int maxExpirations)
     {

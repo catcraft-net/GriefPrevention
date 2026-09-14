@@ -817,8 +817,7 @@ record TrustTransition(String key,
     {
         int first = key.indexOf('|');
         int second = key.indexOf('|', first + 1);
-        if (first <= 0 || second <= first + 1 || second == key.length() - 1
-                || key.indexOf('|', second + 1) >= 0)
+        if (first <= 0 || second <= first + 1 || second == key.length() - 1)
         {
             throw new IllegalArgumentException("invalid transition key shape");
         }
