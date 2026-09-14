@@ -182,3 +182,69 @@ Both runs used `/private/tmp/gptrust-main-m2` and
   this source test run; the fallback contract is covered through the plugin
   API test seam.
 - Existing GriefPrevention deprecation warnings remain unchanged.
+
+## Review correction round
+
+The follow-up command review correction was implemented in code/test commit
+`fe1a4a3`.
+
+### RED
+
+Strict TDD added regressions for the baseline PermissionTrust event payload,
+literal display of an ampersand-bearing group target, and child-friendly
+duration wording before changing production code. The focused suite then
+reported the expected four failures:
+
+```text
+Tests run: 19, Failures: 4, Errors: 0, Skipped: 0
+```
+
+The failures covered the null PermissionTrust event level, target formatting
+injection, the previous `Granted`/`Forever` wording, and abbreviated duration
+labels such as `1d`.
+
+### GREEN
+
+Focused command and tab-completion suite:
+
+```text
+Tests run: 19, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+Full Java 21 suite:
+
+```text
+Tests run: 210, Failures: 0, Errors: 0, Skipped: 0
+BUILD SUCCESS
+```
+
+Both runs used `/private/tmp/gptrust-main-m2` and
+`/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`.
+
+### Files and behavior
+
+- `src/main/java/me/ryanhamshire/GriefPrevention/GriefPrevention.java`
+  - Restores the original PermissionTrust event payload: `given=true` and
+    `ClaimPermission.Manage`, while the service continues to receive the
+    independent `MANAGE` trust kind.
+  - Builds success messages from separately trusted static prefix/scope
+    fragments and a literal display target. The canonical target passed to
+    the service is unchanged.
+  - Uses lowercase `forever` and human words with singular/plural units for
+    exact minutes, hours, days, and weeks, while retaining the all-claims or
+    current-claim scope text.
+- `src/main/java/me/ryanhamshire/GriefPrevention/catcrafttrust/CatCraftMessages.java`
+  - Supplies the static success-message prefix used by the safe display
+    builder.
+- `src/test/java/me/ryanhamshire/GriefPrevention/catcrafttrust/TrustCommandIntegrationTest.java`
+  - Protects baseline event compatibility, literal ampersand target display,
+    canonical target preservation, and human duration output.
+
+### Self-review and concerns
+
+The prior fix-round note describing a legacy null PermissionTrust event level
+is superseded by the baseline-source regression in this round. No trust-core,
+Claim, lifecycle, or command-registration files outside Task 6 ownership were
+changed. Live Paper dispatch was unavailable; existing Java deprecation
+warnings remain unchanged.
