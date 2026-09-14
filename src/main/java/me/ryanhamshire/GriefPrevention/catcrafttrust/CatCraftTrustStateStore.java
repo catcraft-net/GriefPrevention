@@ -54,6 +54,7 @@ public final class CatCraftTrustStateStore
     private final int maximumRecords;
     private final Map<String, TemporaryTrustRecord> records = new LinkedHashMap<>();
     private final Map<Long, Map<String, TemporaryTrustRecord>> byClaim = new LinkedHashMap<>();
+    private final Map<Long, Integer> safeBuildCounts = new LinkedHashMap<>();
     private final PriorityQueue<ExpiryKey> expirationQueue = new PriorityQueue<>(
             Comparator.comparingLong(ExpiryKey::expiresAt).thenComparingLong(ExpiryKey::revision));
     private final Map<String, ExpiryKey> expirationEntries = new LinkedHashMap<>();
@@ -102,6 +103,7 @@ public final class CatCraftTrustStateStore
 
         records.clear();
         byClaim.clear();
+        safeBuildCounts.clear();
         expirationQueue.clear();
         expirationEntries.clear();
         transitions.clear();
@@ -196,6 +198,16 @@ public final class CatCraftTrustStateStore
     public synchronized List<TemporaryTrustRecord> values()
     {
         return List.copyOf(records.values());
+    }
+
+    public synchronized boolean hasAnySafeBuildRecords()
+    {
+        return !safeBuildCounts.isEmpty();
+    }
+
+    public synchronized boolean hasSafeBuildRecord(long claimId)
+    {
+        return safeBuildCounts.containsKey(claimId);
     }
 
     synchronized List<TrustTransition> transitionValues()
@@ -584,12 +596,7 @@ public final class CatCraftTrustStateStore
         records.put(record.key(), record);
         if (previous != null)
         {
-            Map<String, TemporaryTrustRecord> oldRows = byClaim.get(previous.claimId());
-            if (oldRows != null)
-            {
-                oldRows.remove(previous.key());
-                if (oldRows.isEmpty()) byClaim.remove(previous.claimId());
-            }
+            deindexClaim(previous);
         }
         indexClaim(record);
         if (record.expiresAtMillis() > 0)
@@ -603,6 +610,10 @@ public final class CatCraftTrustStateStore
     private void indexClaim(TemporaryTrustRecord record)
     {
         byClaim.computeIfAbsent(record.claimId(), ignored -> new LinkedHashMap<>()).put(record.key(), record);
+        if (isSafeBuildRecord(record))
+        {
+            safeBuildCounts.merge(record.claimId(), 1, Integer::sum);
+        }
     }
 
     private TemporaryTrustRecord removeInternal(String key)
@@ -610,13 +621,30 @@ public final class CatCraftTrustStateStore
         removeExpiry(key);
         TemporaryTrustRecord removed = records.remove(key);
         if (removed == null) return null;
+        deindexClaim(removed);
+        return removed;
+    }
+
+    private void deindexClaim(TemporaryTrustRecord removed)
+    {
         Map<String, TemporaryTrustRecord> rows = byClaim.get(removed.claimId());
         if (rows != null)
         {
-            rows.remove(key);
+            rows.remove(removed.key());
             if (rows.isEmpty()) byClaim.remove(removed.claimId());
         }
-        return removed;
+        if (isSafeBuildRecord(removed))
+        {
+            safeBuildCounts.computeIfPresent(removed.claimId(), (ignored, count) ->
+                    count <= 1 ? null : count - 1);
+        }
+    }
+
+    private static boolean isSafeBuildRecord(TemporaryTrustRecord record)
+    {
+        return record.dimension() == TrustDimension.PERMISSION
+                && record.appliedKind() == CatCraftTrustKind.BUILD
+                && record.expectedState().safeBuild();
     }
 
     private void removeExpiry(String key)
@@ -637,6 +665,7 @@ public final class CatCraftTrustStateStore
     {
         records.clear();
         byClaim.clear();
+        safeBuildCounts.clear();
         expirationQueue.clear();
         expirationEntries.clear();
         transitions.clear();

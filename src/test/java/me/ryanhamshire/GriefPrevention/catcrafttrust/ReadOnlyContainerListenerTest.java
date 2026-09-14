@@ -11,25 +11,38 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.Chest;
 import org.bukkit.block.Container;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.Projectile;
 import org.bukkit.entity.Vehicle;
 import org.bukkit.event.Event;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockBurnEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryAction;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
+import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.vehicle.VehicleDestroyEvent;
@@ -84,7 +97,7 @@ class ReadOnlyContainerListenerTest
     private DataStore dataStore;
     private World world;
     private Block block;
-    private Container state;
+    private Chest state;
     private Inventory source;
     private Inventory playerInventory;
     private Inventory preview;
@@ -106,7 +119,7 @@ class ReadOnlyContainerListenerTest
         dataStore = mock(DataStore.class);
         world = mock(World.class);
         block = mock(Block.class);
-        state = mock(Container.class);
+        state = mock(Chest.class);
         source = mock(Inventory.class);
         playerInventory = mock(Inventory.class);
         preview = mock(Inventory.class);
@@ -123,6 +136,7 @@ class ReadOnlyContainerListenerTest
         when(block.getLocation()).thenReturn(location);
         when(block.getState()).thenReturn(state);
         when(state.getBlock()).thenReturn(block);
+        when(state.getType()).thenReturn(Material.CHEST);
         when(state.getInventory()).thenReturn(source);
         when(source.getSize()).thenReturn(9);
         when(source.getContents()).thenReturn(new ItemStack[9]);
@@ -184,6 +198,27 @@ class ReadOnlyContainerListenerTest
         verify(player).openInventory(preview);
         verify(source, never()).setItem(anyInt(), any(ItemStack.class));
         verify(source, never()).setContents(any(ItemStack[].class));
+    }
+
+    @Test
+    void closingPreviousViewDuringPreviewOpenDoesNotClearNewSession()
+    {
+        Inventory previous = mock(Inventory.class);
+        InventoryView previousView = view(previous);
+        InventoryView previewView = view(preview);
+        when(player.openInventory(preview)).thenAnswer(invocation -> {
+            listener.onInventoryClose(new InventoryCloseEvent(previousView));
+            return previewView;
+        });
+
+        PlayerInteractEvent event = interact();
+        listener.onPlayerInteract(event);
+        scheduled.removeFirst().run();
+
+        InventoryOpenEvent opened = new InventoryOpenEvent(previewView);
+        listener.onInventoryOpen(opened);
+
+        assertFalse(opened.isCancelled());
     }
 
     @Test
@@ -352,6 +387,154 @@ class ReadOnlyContainerListenerTest
         }
 
         verify(player, times(1)).sendMessage(anyString());
+    }
+
+    @Test
+    void safeBuilderCannotEmptyBucketsOrIgniteBlocks()
+    {
+        PlayerBucketEmptyEvent bucket = new PlayerBucketEmptyEvent(
+                player, block, block, BlockFace.UP, Material.WATER_BUCKET, null);
+        listener.onPlayerBucketEmpty(bucket);
+        assertTrue(bucket.isCancelled());
+
+        BlockIgniteEvent ignite = new BlockIgniteEvent(
+                block, BlockIgniteEvent.IgniteCause.FLINT_AND_STEEL, player);
+        listener.onBlockIgnite(ignite);
+        assertTrue(ignite.isCancelled());
+    }
+
+    @Test
+    void safeBuilderCannotUseRedstoneControlsButCanUseOrdinaryDoors()
+    {
+        for (Material control : List.of(Material.LEVER, Material.STONE_BUTTON,
+                Material.STONE_PRESSURE_PLATE))
+        {
+            when(block.getType()).thenReturn(control);
+            Action action = control.name().endsWith("PRESSURE_PLATE")
+                    ? Action.PHYSICAL : Action.RIGHT_CLICK_BLOCK;
+            PlayerInteractEvent event = new PlayerInteractEvent(
+                    player, action, null, block, BlockFace.UP, EquipmentSlot.HAND);
+            listener.onPlayerInteract(event);
+            assertTrue(event.isCancelled(), control.name());
+        }
+
+        when(block.getType()).thenReturn(Material.OAK_DOOR);
+        when(block.getState()).thenReturn(mock(BlockState.class));
+        PlayerInteractEvent door = new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_BLOCK, null, block, BlockFace.UP, EquipmentSlot.HAND);
+        listener.onPlayerInteract(door);
+        assertFalse(door.isCancelled());
+    }
+
+    @Test
+    void safeBuilderPausesBoundedAutomationAndFluidPathsInClaim()
+    {
+        when(trusts.hasAnySafeBuilders()).thenReturn(true);
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
+
+        InventoryMoveItemEvent move = new InventoryMoveItemEvent(
+                source, new ItemStack(Material.STONE), source, true);
+        listener.onInventoryMove(move);
+        assertTrue(move.isCancelled());
+
+        Item dropped = mock(Item.class);
+        Location droppedLocation = block.getLocation();
+        when(dropped.getLocation()).thenReturn(droppedLocation);
+        InventoryPickupItemEvent pickup = new InventoryPickupItemEvent(source, dropped);
+        listener.onInventoryPickup(pickup);
+        assertTrue(pickup.isCancelled());
+
+        BlockDispenseEvent dispense = new BlockDispenseEvent(
+                block, new ItemStack(Material.STONE), new org.bukkit.util.Vector());
+        listener.onBlockDispense(dispense);
+        assertTrue(dispense.isCancelled());
+
+        BlockPistonExtendEvent piston = new BlockPistonExtendEvent(
+                block, List.of(block), BlockFace.NORTH);
+        listener.onPistonExtend(piston);
+        assertTrue(piston.isCancelled());
+
+        BlockRedstoneEvent redstone = new BlockRedstoneEvent(block, 0, 15);
+        listener.onRedstone(redstone);
+        assertEquals(redstone.getOldCurrent(), redstone.getNewCurrent());
+
+        BlockFromToEvent flow = new BlockFromToEvent(block, block);
+        listener.onBlockFromTo(flow);
+        assertTrue(flow.isCancelled());
+    }
+
+    @Test
+    void safeBuilderStorageIsProtectedFromBurnAndExplosion()
+    {
+        when(trusts.hasAnySafeBuilders()).thenReturn(true);
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
+        when(source.isEmpty()).thenReturn(false);
+
+        BlockBurnEvent burn = new BlockBurnEvent(block);
+        listener.onBlockBurn(burn);
+        assertTrue(burn.isCancelled());
+
+        BlockExplodeEvent explosion = new BlockExplodeEvent(
+                block, state, new ArrayList<>(List.of(block)), 1.0f,
+                org.bukkit.ExplosionResult.DESTROY);
+        listener.onBlockExplode(explosion);
+        assertTrue(explosion.blockList().isEmpty());
+    }
+
+    @Test
+    void environmentalDamageToInventoryEntityIsCancelled()
+    {
+        when(trusts.hasAnySafeBuilders()).thenReturn(true);
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
+        Entity entity = mock(Entity.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(InventoryHolder.class));
+        Location entityLocation = block.getLocation();
+        when(entity.getLocation()).thenReturn(entityLocation);
+        when(((InventoryHolder) entity).getInventory()).thenReturn(source);
+
+        EntityDamageEvent damage = mock(EntityDamageEvent.class);
+        when(damage.getEntity()).thenReturn(entity);
+        java.util.concurrent.atomic.AtomicBoolean cancelled =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            cancelled.set(invocation.getArgument(0));
+            return null;
+        }).when(damage).setCancelled(any(Boolean.class));
+        when(damage.isCancelled()).thenAnswer(invocation -> cancelled.get());
+        listener.onEntityDamage(damage);
+
+        assertTrue(damage.isCancelled());
+    }
+
+    @Test
+    void doubleChestOpenUsesDetachedPreviewAndUnknownPluginHolderIsDenied()
+    {
+        Chest left = mock(Chest.class);
+        Chest right = mock(Chest.class);
+        when(left.getBlock()).thenReturn(block);
+        when(right.getBlock()).thenReturn(block);
+        org.bukkit.block.DoubleChest doubleChest = mock(org.bukkit.block.DoubleChest.class);
+        when(doubleChest.getLeftSide()).thenReturn(left);
+        when(doubleChest.getRightSide()).thenReturn(right);
+        Inventory doubleInventory = mock(Inventory.class);
+        when(doubleInventory.getHolder()).thenReturn(doubleChest);
+        when(doubleInventory.getSize()).thenReturn(18);
+        when(doubleInventory.getContents()).thenReturn(new ItemStack[18]);
+        when(doubleChest.getInventory()).thenReturn(doubleInventory);
+        InventoryOpenEvent doubleOpen = new InventoryOpenEvent(view(doubleInventory));
+
+        listener.onInventoryOpen(doubleOpen);
+
+        assertTrue(doubleOpen.isCancelled());
+        assertEquals(1, scheduled.size());
+
+        InventoryHolder unknown = mock(InventoryHolder.class);
+        Inventory unknownInventory = mock(Inventory.class);
+        when(unknownInventory.getHolder()).thenReturn(unknown);
+        when(unknownInventory.getType()).thenReturn(InventoryType.CHEST);
+        InventoryOpenEvent unknownOpen = new InventoryOpenEvent(view(unknownInventory));
+        listener.onInventoryOpen(unknownOpen);
+        assertTrue(unknownOpen.isCancelled());
     }
 
     @Test

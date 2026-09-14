@@ -49,6 +49,9 @@ class CatCraftTrustStateStoreTest
         assertEquals(Optional.of(record), second.get(record.key()));
         assertEquals(List.of(record), second.forClaim(42L));
         assertEquals(List.of(record), second.values());
+        assertTrue(second.hasAnySafeBuildRecords());
+        assertTrue(second.hasSafeBuildRecord(42L));
+        assertFalse(second.hasSafeBuildRecord(43L));
         assertEquals(record, second.findSafeBuild(42L, TARGET, null,
                 1_699_999_999_999L, OWNER).orElseThrow());
     }
@@ -79,8 +82,11 @@ class CatCraftTrustStateStoreTest
         store.put(replacement);
 
         assertEquals(1, store.size());
+        assertTrue(store.hasAnySafeBuildRecords());
         assertEquals(Optional.of(replacement), store.get(first.key()));
         assertThrows(IllegalStateException.class, () -> store.put(record(43L, "other", 0L, 3L)));
+        store.remove(replacement.key());
+        assertFalse(store.hasAnySafeBuildRecords());
     }
 
     @Test

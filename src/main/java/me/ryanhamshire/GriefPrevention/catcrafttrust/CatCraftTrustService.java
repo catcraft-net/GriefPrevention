@@ -126,6 +126,25 @@ public final class CatCraftTrustService
                 resolved == null ? fallback : resolved, visited);
     }
 
+    /** Constant-time global hint used before hot automation-event claim lookups. */
+    public boolean hasAnySafeBuilders()
+    {
+        return loaded && store.hasAnySafeBuildRecords();
+    }
+
+    /**
+     * Checks the claim and inherited parent chain without retaining Claim
+     * objects. Expired or owner-mismatched records are excluded.
+     */
+    public boolean hasAnySafeBuilder(Claim claim)
+    {
+        if (!loaded || claim == null || claim.getID() == null) return false;
+        ClaimSnapshot fallback = new ClaimSnapshot(claim.getID(), claim.getOwnerID(),
+                claim.parent == null ? null : claim.parent.getID(), claim.getSubclaimRestrictions());
+        ClaimSnapshot resolved = claimAccess.resolve(claim.getID());
+        return hasAnySafeBuilder(resolved == null ? fallback : resolved, new HashSet<>());
+    }
+
     public void grant(Collection<Claim> claims,
                       String target,
                       CatCraftTrustKind kind,
@@ -975,6 +994,17 @@ public final class CatCraftTrustService
         if (snapshot.restricted() || snapshot.parentId() == null) return false;
         ClaimSnapshot parent = claimAccess.resolve(snapshot.parentId());
         return parent != null && isSafeBuilder(parent.claimId(), playerId, player, parent, visited);
+    }
+
+    private boolean hasAnySafeBuilder(ClaimSnapshot snapshot, Set<Long> visited)
+    {
+        if (snapshot == null || !visited.add(snapshot.claimId())) return false;
+        if (store.findAnySafeBuild(snapshot.claimId(), nowMillis.getAsLong(), snapshot.ownerId()).isPresent())
+        {
+            return true;
+        }
+        if (snapshot.restricted() || snapshot.parentId() == null) return false;
+        return hasAnySafeBuilder(claimAccess.resolve(snapshot.parentId()), visited);
     }
 
     private ClaimSnapshot snapshotFor(Claim claim)

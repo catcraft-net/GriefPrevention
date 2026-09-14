@@ -7,6 +7,7 @@ import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.DoubleChest;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
@@ -16,17 +17,30 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
+import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockDispenseEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockPistonExtendEvent;
+import org.bukkit.event.block.BlockPistonRetractEvent;
+import org.bukkit.event.block.BlockRedstoneEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryEvent;
+import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
+import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
 import org.bukkit.event.player.PlayerKickEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.server.PluginDisableEvent;
@@ -83,7 +97,8 @@ public final class ReadOnlyContainerListener implements Listener
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onPlayerInteract(PlayerInteractEvent event)
     {
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK
+                && event.getAction() != Action.PHYSICAL) return;
         Block block = event.getClickedBlock();
         if (block == null) return;
         Player player = event.getPlayer();
@@ -93,6 +108,13 @@ public final class ReadOnlyContainerListener implements Listener
         StorageProtectionPolicy.StorageDecision decision = StorageProtectionPolicy.classifyBreak(block);
         if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY)
         {
+            if (StorageProtectionPolicy.isDirectRedstoneControl(block.getType()))
+            {
+                cancelInteraction(event);
+                deny(player);
+                return;
+            }
+            if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
             ItemStack item = event.getItem();
             if (item != null && StorageProtectionPolicy.denyPlacement(item))
             {
@@ -148,8 +170,7 @@ public final class ReadOnlyContainerListener implements Listener
             return;
         }
 
-        Block block = holder instanceof BlockInventoryHolder blockHolder
-                ? safeBlock(blockHolder) : null;
+        Block block = blockForHolder(holder);
         if (block == null)
         {
             Claim nearbyClaim = claimAt(player.getLocation());
@@ -254,6 +275,115 @@ public final class ReadOnlyContainerListener implements Listener
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onPlayerBucketEmpty(PlayerBucketEmptyEvent event)
+    {
+        Block block = event.getBlock();
+        if (block == null) block = event.getBlockClicked();
+        Claim claim = block == null ? null : claimAt(block.getLocation());
+        if (safeBuilder(claim, event.getPlayer()))
+        {
+            event.setCancelled(true);
+            deny(event.getPlayer());
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onBlockIgnite(BlockIgniteEvent event)
+    {
+        Player player = event.getPlayer();
+        if (player == null) player = responsiblePlayer(event.getIgnitingEntity());
+        if (player == null) return;
+        Block block = event.getBlock();
+        Claim claim = block == null ? null : claimAt(block.getLocation());
+        if (safeBuilder(claim, player))
+        {
+            event.setCancelled(true);
+            deny(player);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onInventoryMove(InventoryMoveItemEvent event)
+    {
+        if (safeBuildExistsAt(event.getSource()) || safeBuildExistsAt(event.getDestination())
+                || safeBuildExistsAt(event.getInitiator())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onInventoryPickup(InventoryPickupItemEvent event)
+    {
+        if (safeBuildExistsAt(event.getInventory())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onBlockDispense(BlockDispenseEvent event)
+    {
+        if (safeBuildExistsAt(event.getBlock())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onPistonExtend(BlockPistonExtendEvent event)
+    {
+        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getBlocks()))
+        {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onPistonRetract(BlockPistonRetractEvent event)
+    {
+        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getBlocks()))
+        {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onRedstone(BlockRedstoneEvent event)
+    {
+        if (safeBuildExistsAt(event.getBlock())) event.setNewCurrent(event.getOldCurrent());
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onBlockFromTo(BlockFromToEvent event)
+    {
+        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getToBlock()))
+        {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onBlockBurn(BlockBurnEvent event)
+    {
+        Block block = event.getBlock();
+        if (isProtectedStorage(block) && safeBuildExistsAt(block)) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onBlockExplode(BlockExplodeEvent event)
+    {
+        protectExplosionBlocks(event.blockList());
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onEntityExplode(EntityExplodeEvent event)
+    {
+        protectExplosionBlocks(event.blockList());
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onEntityDamage(EntityDamageEvent event)
+    {
+        if (event instanceof EntityDamageByEntityEvent) return;
+        Entity entity = event.getEntity();
+        if (!(entity instanceof InventoryHolder)
+                || entity instanceof HumanEntity || entity instanceof Merchant) return;
+        if (safeBuildExistsAt(entity.getLocation())) event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
     public void onPlayerInteractEntity(PlayerInteractEntityEvent event)
     {
         Player player = event.getPlayer();
@@ -304,9 +434,14 @@ public final class ReadOnlyContainerListener implements Listener
     {
         if (!(event.getPlayer() instanceof Player player)) return;
         UUID playerId = player.getUniqueId();
-        if (sessions.containsKey(playerId) || pendingTasks.containsKey(playerId))
+        InventoryHolder holder = safeHolder(event.getInventory());
+        if (holder instanceof SessionHolder closed)
         {
-            clearViewer(playerId, false);
+            ViewSession current = sessions.get(playerId);
+            if (current != null && current.token().equals(closed.token()))
+            {
+                clearViewer(playerId, false);
+            }
         }
     }
 
@@ -530,6 +665,112 @@ public final class ReadOnlyContainerListener implements Listener
         catch (RuntimeException failure)
         {
             return null;
+        }
+    }
+
+    private static Block blockForHolder(@Nullable InventoryHolder holder)
+    {
+        if (holder instanceof BlockInventoryHolder blockHolder) return safeBlock(blockHolder);
+        if (holder instanceof DoubleChest doubleChest)
+        {
+            try
+            {
+                InventoryHolder left = doubleChest.getLeftSide();
+                Block leftBlock = left instanceof BlockInventoryHolder blockHolder
+                        ? safeBlock(blockHolder) : null;
+                if (leftBlock != null) return leftBlock;
+                InventoryHolder right = doubleChest.getRightSide();
+                return right instanceof BlockInventoryHolder blockHolder
+                        ? safeBlock(blockHolder) : null;
+            }
+            catch (RuntimeException failure)
+            {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private boolean safeBuildExistsAt(@Nullable Block block)
+    {
+        return block != null && safeBuildExistsAt(block.getLocation());
+    }
+
+    private boolean safeBuildExistsAt(@Nullable List<Block> blocks)
+    {
+        if (blocks == null) return false;
+        for (Block block : blocks)
+        {
+            if (safeBuildExistsAt(block)) return true;
+        }
+        return false;
+    }
+
+    private boolean safeBuildExistsAt(@Nullable Inventory inventory)
+    {
+        if (inventory == null || !hasAnySafeBuilders()) return false;
+        return safeBuildExistsAt(holderLocation(safeHolder(inventory)));
+    }
+
+    private boolean safeBuildExistsAt(@Nullable Location location)
+    {
+        if (location == null || !hasAnySafeBuilders()) return false;
+        Claim claim = claimAt(location);
+        if (claim == null) return false;
+        try
+        {
+            return trusts.hasAnySafeBuilder(claim);
+        }
+        catch (RuntimeException failure)
+        {
+            return false;
+        }
+    }
+
+    private boolean hasAnySafeBuilders()
+    {
+        try
+        {
+            return trusts.hasAnySafeBuilders();
+        }
+        catch (RuntimeException failure)
+        {
+            return false;
+        }
+    }
+
+    private static @Nullable Location holderLocation(@Nullable InventoryHolder holder)
+    {
+        try
+        {
+            Block block = holder instanceof BlockInventoryHolder blockHolder
+                    ? safeBlock(blockHolder) : null;
+            if (block != null) return block.getLocation();
+            return holder instanceof Entity entity ? entity.getLocation() : null;
+        }
+        catch (RuntimeException failure)
+        {
+            return null;
+        }
+    }
+
+    private boolean isProtectedStorage(@Nullable Block block)
+    {
+        if (block == null) return false;
+        StorageProtectionPolicy.StorageDecision decision =
+                StorageProtectionPolicy.classifyBreak(block);
+        return decision == StorageProtectionPolicy.StorageDecision.PROTECTED_NONEMPTY
+                || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
+                || decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED;
+    }
+
+    private void protectExplosionBlocks(@Nullable List<Block> blocks)
+    {
+        if (blocks == null || !hasAnySafeBuilders()) return;
+        for (int index = blocks.size() - 1; index >= 0; index--)
+        {
+            Block block = blocks.get(index);
+            if (isProtectedStorage(block) && safeBuildExistsAt(block)) blocks.remove(index);
         }
     }
 
