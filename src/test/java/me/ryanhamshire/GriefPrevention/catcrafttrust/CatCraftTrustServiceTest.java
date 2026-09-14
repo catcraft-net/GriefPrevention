@@ -59,6 +59,26 @@ class CatCraftTrustServiceTest
     }
 
     @Test
+    void successfulExpirationEmitsOneNotificationAfterPersistence() throws Exception
+    {
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        AtomicLong now = new AtomicLong(1_700_000_000_000L);
+        CatCraftTrustService service = service(access, scheduler, now, 10);
+        List<TemporaryTrustRecord> notifications = new ArrayList<>();
+        service.setExpirationListener(notifications::add);
+        service.start();
+        service.grant(List.of(claim(42L, OWNER)), TARGET,
+                CatCraftTrustKind.BUILD, Duration.ofMinutes(1));
+
+        now.addAndGet(Duration.ofMinutes(1).toMillis());
+        scheduler.runFuture();
+
+        assertEquals(1, notifications.size());
+        assertEquals(TARGET, notifications.getFirst().target());
+    }
+
+    @Test
     void permanentReplacementInvalidatesTemporaryGeneration()
             throws Exception
     {
@@ -1215,6 +1235,42 @@ class CatCraftTrustServiceTest
         restarted.start();
 
         assertEquals(pipeTarget.toLowerCase(), restarted.recordsForClaim(42L).get(0).target());
+    }
+
+    @Test
+    void claimTransferRestoresActiveTrustBeforeOwnerChanges() throws Exception
+    {
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(directory.resolve("transfer.properties"), 10),
+                access, new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+
+        service.prepareClaimTransfer(claim);
+
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+    }
+
+    @Test
+    void claimTransferDoesNotOverwriteASeparateNewerTrustDecision() throws Exception
+    {
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(directory.resolve("transfer-stale.properties"), 10),
+                access, new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        NativeTrustState newer = new NativeTrustState(ClaimPermission.Inventory, false, false);
+        access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION), newer);
+
+        service.prepareClaimTransfer(claim);
+
+        assertEquals(newer, access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertTrue(service.recordsForClaim(42L).isEmpty());
     }
 
     private CatCraftTrustService service(FakeAccess access, FakeScheduler scheduler,

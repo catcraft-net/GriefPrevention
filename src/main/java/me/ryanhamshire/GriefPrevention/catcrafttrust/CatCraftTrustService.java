@@ -18,6 +18,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 import java.util.logging.Logger;
 
@@ -37,6 +38,7 @@ public final class CatCraftTrustService
     private final LongSupplier nowMillis;
     private final int maximumExpirationsPerTick;
     private final Logger logger;
+    private Consumer<TemporaryTrustRecord> expirationListener = ignored -> { };
     private ScheduledHandle expirationHandle;
     private boolean loaded;
     private int internalMutationDepth;
@@ -103,6 +105,12 @@ public final class CatCraftTrustService
             cancelScheduledExpiration();
             throw failure;
         }
+    }
+
+    public void setExpirationListener(Consumer<TemporaryTrustRecord> listener)
+    {
+        if (loaded) throw new IllegalStateException("expiration listener must be set before start");
+        this.expirationListener = Objects.requireNonNull(listener, "listener");
     }
 
     public void stop() throws IOException
@@ -388,11 +396,81 @@ public final class CatCraftTrustService
         scheduleNextExpiration();
     }
 
-    public void onClaimOwnerChanging(Claim claim)
+    /**
+     * Restores active CatCraft decisions before a claim tree changes owner.
+     * The transition journal is flushed before native permissions change, so
+     * a crash cannot leave a grant attached to the new owner indefinitely.
+     */
+    public void prepareClaimTransfer(Claim claim) throws IOException
     {
-        if (!loaded || claim == null || claim.getID() == null
-                || store.removeClaim(claim.getID()) == 0) return;
-        persistBestEffort();
+        requireStarted();
+        Objects.requireNonNull(claim, "claim");
+        Set<Long> ids = claimIds(claim, new HashSet<>());
+        List<TemporaryTrustRecord> candidates = store.values().stream()
+                .filter(record -> ids.contains(record.claimId()))
+                .toList();
+        if (candidates.isEmpty()) return;
+
+        List<ExpirationMutation> mutations = new ArrayList<>();
+        List<TemporaryTrustRecord> metadataOnly = new ArrayList<>();
+        for (TemporaryTrustRecord record : candidates)
+        {
+            ClaimSnapshot snapshot = claimAccess.resolve(record.claimId());
+            if (snapshot == null || !Objects.equals(snapshot.ownerId(), record.ownerIdAtGrant()))
+            {
+                metadataOnly.add(record);
+                continue;
+            }
+            NativeTrustState current = captureForRecord(record.claimId(), record.target(),
+                    record.dimension(), record);
+            if (!matchesRecordState(current, record.expectedState(), record.dimension()))
+            {
+                metadataOnly.add(record);
+                continue;
+            }
+            mutations.add(new ExpirationMutation(record, current,
+                    new TrustTransition(record.key(), record, record.expectedState(),
+                            null, record.previousState())));
+        }
+
+        List<TrustTransition> transitions = mutations.stream()
+                .map(ExpirationMutation::transition).toList();
+        try
+        {
+            store.commitPreparedTransitions(transitions, store.reserveRevisions(0));
+            store.save();
+        }
+        catch (IOException | RuntimeException failure)
+        {
+            for (TrustTransition transition : transitions) store.abortTransition(transition.key());
+            throw failure;
+        }
+
+        for (TemporaryTrustRecord record : metadataOnly)
+        {
+            store.removeIfRevision(record.key(), record.revision());
+        }
+        try
+        {
+            for (ExpirationMutation mutation : mutations)
+            {
+                TemporaryTrustRecord record = mutation.record();
+                if (!matchesRecordState(mutation.current(), record.previousState(), record.dimension()))
+                {
+                    withInternalMutation(() -> claimAccess.apply(record.claimId(), record.target(),
+                            record.previousState(), record.dimension()));
+                    claimAccess.save(record.claimId());
+                }
+                store.completeTransition(record.key());
+            }
+            store.save();
+        }
+        catch (IOException | RuntimeException failure)
+        {
+            markUnavailable();
+            if (failure instanceof IOException io) throw io;
+            throw failure;
+        }
         scheduleNextExpiration();
     }
 
@@ -529,6 +607,11 @@ public final class CatCraftTrustService
     public List<TemporaryTrustRecord> recordsForClaim(long claimId)
     {
         return store.forClaim(claimId);
+    }
+
+    public List<TemporaryTrustRecord> recordsSnapshot()
+    {
+        return store.values();
     }
 
     public boolean isStarted()
@@ -792,6 +875,18 @@ public final class CatCraftTrustService
         {
             failExpiration("Could not persist expired CatCraft trust", null);
             return;
+        }
+        for (ExpirationMutation mutation : mutations)
+        {
+            try
+            {
+                expirationListener.accept(mutation.record());
+            }
+            catch (RuntimeException notificationFailure)
+            {
+                logger.warning("Could not notify a CatCraft trust expiry: "
+                        + notificationFailure.getMessage());
+            }
         }
         scheduleDueOrNext(now);
     }

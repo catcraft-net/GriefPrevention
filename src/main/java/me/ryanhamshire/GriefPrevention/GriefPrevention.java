@@ -28,6 +28,8 @@ import me.ryanhamshire.GriefPrevention.DataStore.NoTransferException;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftMessages;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustCommandSupport;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustKind;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustRuntime;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustSettings;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustService;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.TemporaryTrustRecord;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.TrustCommandRequest;
@@ -107,8 +109,10 @@ public class GriefPrevention extends JavaPlugin
 
     // CatCraft's command-only safe and temporary trust state. Initialized after claim data loads.
     public CatCraftTrustService catCraftTrustService;
-    /** Default maximum trust duration; configuration loading will replace this in the next task. */
     public Duration config_catCraftTrustMaximumDuration = Duration.ofDays(30);
+    private CatCraftTrustSettings config_catCraftTrustSettings =
+            CatCraftTrustSettings.bounded(true, 30L, 10_000, 100, 3);
+    private CatCraftTrustRuntime catCraftTrustRuntime;
     private static final CatCraftTrustCommandSupport CATCRAFT_TRUST_COMMAND_SUPPORT = new CatCraftTrustCommandSupport();
 
     // Event handlers with common functionality
@@ -357,6 +361,26 @@ public class GriefPrevention extends JavaPlugin
         String dataMode = (this.dataStore instanceof FlatFileDataStore) ? "(File Mode)" : "(Database Mode)";
         AddLogEntry("Finished loading data " + dataMode + ".");
 
+        try
+        {
+            // The reconciler always runs, even when new CatCraft grants are
+            // disabled, so existing temporary permissions still expire safely.
+            this.catCraftTrustRuntime = CatCraftTrustRuntime.start(
+                    this, this.dataStore, this.config_catCraftTrustSettings);
+            this.catCraftTrustService = this.catCraftTrustRuntime.service();
+            AddLogEntry(this.config_catCraftTrustSettings.enabled()
+                    ? "CatCraft trust safety enabled."
+                    : "CatCraft trust safety loaded for existing-record cleanup; new grants are disabled.");
+        }
+        catch (IOException | RuntimeException failure)
+        {
+            this.catCraftTrustRuntime = null;
+            this.catCraftTrustService = null;
+            this.getLogger().log(Level.SEVERE,
+                    "CatCraft trust safety could not start; ordinary GriefPrevention remains enabled.",
+                    failure);
+        }
+
         //unless claim block accrual is disabled, start the recurring per 10 minute event to give claim blocks to online players
         //20L ~ 1 second
         if (this.config_claims_blocksAccruedPerHour_default > 0)
@@ -427,6 +451,14 @@ public class GriefPrevention extends JavaPlugin
 
         //read configuration settings (note defaults)
         int configVersion = config.getInt("GriefPrevention.ConfigVersion", 0);
+
+        this.config_catCraftTrustSettings = CatCraftTrustSettings.bounded(
+                config.getBoolean("GriefPrevention.CatCraftTrust.Enabled", true),
+                config.getLong("GriefPrevention.CatCraftTrust.MaximumTemporaryDurationDays", 30L),
+                config.getInt("GriefPrevention.CatCraftTrust.MaximumTemporaryRecords", 10_000),
+                config.getInt("GriefPrevention.CatCraftTrust.MaximumExpirationsPerTick", 100),
+                config.getInt("GriefPrevention.CatCraftTrust.DenialMessageCooldownSeconds", 3));
+        this.config_catCraftTrustMaximumDuration = this.config_catCraftTrustSettings.maximumDuration();
 
         //get (deprecated node) claims world names from the config file
         List<World> worlds = this.getServer().getWorlds();
@@ -858,6 +890,16 @@ public class GriefPrevention extends JavaPlugin
         outConfig.set("GriefPrevention.Advanced.fixNegativeClaimblockAmounts", this.config_advanced_fixNegativeClaimblockAmounts);
         outConfig.set("GriefPrevention.Advanced.ClaimExpirationCheckRate", this.config_advanced_claim_expiration_check_rate);
         outConfig.set("GriefPrevention.Advanced.OfflinePlayer_cache_days", this.config_advanced_offlineplayer_cache_days);
+
+        outConfig.set("GriefPrevention.CatCraftTrust.Enabled", this.config_catCraftTrustSettings.enabled());
+        outConfig.set("GriefPrevention.CatCraftTrust.MaximumTemporaryDurationDays",
+                this.config_catCraftTrustSettings.maximumDuration().toDays());
+        outConfig.set("GriefPrevention.CatCraftTrust.MaximumTemporaryRecords",
+                this.config_catCraftTrustSettings.maximumRecords());
+        outConfig.set("GriefPrevention.CatCraftTrust.MaximumExpirationsPerTick",
+                this.config_catCraftTrustSettings.maximumExpirationsPerTick());
+        outConfig.set("GriefPrevention.CatCraftTrust.DenialMessageCooldownSeconds",
+                this.config_catCraftTrustSettings.denialMessageCooldownSeconds());
 
         //custom logger settings
         outConfig.set("GriefPrevention.Abridged Logs.Days To Keep", this.config_logs_daysToKeep);
@@ -1298,7 +1340,10 @@ public class GriefPrevention extends JavaPlugin
             }
             catch (NoTransferException e)
             {
-                GriefPrevention.sendMessage(player, TextMode.Instr, Messages.TransferTopLevel);
+                if (claim.parent != null)
+                    GriefPrevention.sendMessage(player, TextMode.Instr, Messages.TransferTopLevel);
+                else
+                    sendCatCraftMessage(player, CatCraftMessages.unavailable());
                 return true;
             }
 
@@ -2521,7 +2566,10 @@ public class GriefPrevention extends JavaPlugin
             return;
         }
 
-        boolean serviceStarted = this.catCraftTrustService != null && this.catCraftTrustService.isStarted();
+        boolean featuresEnabled = this.config_catCraftTrustSettings == null
+                || this.config_catCraftTrustSettings.enabled();
+        boolean serviceStarted = featuresEnabled
+                && this.catCraftTrustService != null && this.catCraftTrustService.isStarted();
         if ((request.kind() == CatCraftTrustKind.BUILD || request.duration() != null) && !serviceStarted)
         {
             sendCatCraftMessage(player, CatCraftMessages.unavailable());
@@ -2887,6 +2935,23 @@ public class GriefPrevention extends JavaPlugin
 
     public void onDisable()
     {
+        if (this.catCraftTrustRuntime != null)
+        {
+            try
+            {
+                this.catCraftTrustRuntime.stop();
+            }
+            catch (IOException failure)
+            {
+                this.getLogger().log(Level.SEVERE, "Could not save CatCraft trust state during shutdown.", failure);
+            }
+            finally
+            {
+                this.catCraftTrustRuntime = null;
+                this.catCraftTrustService = null;
+            }
+        }
+
         //save data for any online players
         @SuppressWarnings("unchecked")
         Collection<Player> players = (Collection<Player>) this.getServer().getOnlinePlayers();

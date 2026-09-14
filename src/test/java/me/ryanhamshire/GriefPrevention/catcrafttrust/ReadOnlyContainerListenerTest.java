@@ -12,6 +12,7 @@ import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.Chest;
+import org.bukkit.block.Hopper;
 import org.bukkit.block.Container;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Item;
@@ -227,6 +228,24 @@ class ReadOnlyContainerListenerTest
         InventoryOpenEvent event = new InventoryOpenEvent(view(source));
 
         listener.onInventoryOpen(event);
+
+        assertTrue(event.isCancelled());
+        assertEquals(1, scheduled.size());
+    }
+
+    @Test
+    void automationContainerCanBeViewedButRemainsProtectedFromMutation()
+    {
+        Hopper hopper = mock(Hopper.class);
+        Inventory hopperInventory = mock(Inventory.class);
+        when(block.getType()).thenReturn(Material.HOPPER);
+        when(block.getState()).thenReturn(hopper);
+        when(hopper.getInventory()).thenReturn(hopperInventory);
+        when(hopperInventory.getContents()).thenReturn(new ItemStack[5]);
+        when(hopperInventory.getSize()).thenReturn(5);
+
+        PlayerInteractEvent event = interact();
+        listener.onPlayerInteract(event);
 
         assertTrue(event.isCancelled());
         assertEquals(1, scheduled.size());

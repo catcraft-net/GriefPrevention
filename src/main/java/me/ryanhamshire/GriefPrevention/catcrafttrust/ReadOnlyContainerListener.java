@@ -72,26 +72,35 @@ public final class ReadOnlyContainerListener implements Listener
 {
     private static final String DENIAL_MESSAGE =
             "§b[CatCraft] §eBuild Trust allows read-only container viewing.";
-    private static final long DENIAL_COOLDOWN_MILLIS = 1000L;
+    private static final long DEFAULT_DENIAL_COOLDOWN_MILLIS = 3000L;
 
     private final JavaPlugin plugin;
     private final SafeBuildTrustProvider trusts;
     private final LongSupplier nowMillis;
+    private final long denialCooldownMillis;
     private final Map<UUID, ViewSession> sessions = new HashMap<>();
     private final Map<UUID, Integer> pendingTasks = new HashMap<>();
     private final Map<UUID, Long> denialTimestamps = new HashMap<>();
 
     public ReadOnlyContainerListener(JavaPlugin plugin, SafeBuildTrustProvider trusts)
     {
-        this(plugin, trusts, System::currentTimeMillis);
+        this(plugin, trusts, System::currentTimeMillis, DEFAULT_DENIAL_COOLDOWN_MILLIS);
     }
 
     ReadOnlyContainerListener(JavaPlugin plugin, SafeBuildTrustProvider trusts,
                               LongSupplier nowMillis)
     {
+        this(plugin, trusts, nowMillis, DEFAULT_DENIAL_COOLDOWN_MILLIS);
+    }
+
+    ReadOnlyContainerListener(JavaPlugin plugin, SafeBuildTrustProvider trusts,
+                              LongSupplier nowMillis, long denialCooldownMillis)
+    {
         this.plugin = Objects.requireNonNull(plugin, "plugin");
         this.trusts = Objects.requireNonNull(trusts, "trusts");
         this.nowMillis = Objects.requireNonNull(nowMillis, "nowMillis");
+        if (denialCooldownMillis < 0L) throw new IllegalArgumentException("negative denial cooldown");
+        this.denialCooldownMillis = denialCooldownMillis;
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -124,8 +133,7 @@ public final class ReadOnlyContainerListener implements Listener
             return;
         }
         cancelInteraction(event);
-        if (decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
-                || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED)
+        if (decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED)
         {
             deny(player);
             return;
@@ -188,8 +196,7 @@ public final class ReadOnlyContainerListener implements Listener
                 StorageProtectionPolicy.classifyBreak(block);
         if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY) return;
         event.setCancelled(true);
-        if (decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
-                || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
+        if (decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
                 || !StorageProtectionPolicy.supportsDetachedInventory(holder))
         {
             deny(player);
@@ -541,7 +548,6 @@ public final class ReadOnlyContainerListener implements Listener
             StorageProtectionPolicy.StorageDecision decision =
                     StorageProtectionPolicy.classifyBreak(block);
             if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY
-                    || decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
                     || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
                     || !StorageProtectionPolicy.supportsDetachedView(safeState(block))) return false;
             Claim sourceClaim = claimAt(new Location(world, session.x(), session.y(), session.z()));
@@ -599,7 +605,7 @@ public final class ReadOnlyContainerListener implements Listener
     {
         long now = nowMillis.getAsLong();
         Long previous = denialTimestamps.get(player.getUniqueId());
-        if (previous == null || now - previous >= DENIAL_COOLDOWN_MILLIS)
+        if (previous == null || now - previous >= denialCooldownMillis)
         {
             denialTimestamps.put(player.getUniqueId(), now);
             player.sendMessage(DENIAL_MESSAGE);
