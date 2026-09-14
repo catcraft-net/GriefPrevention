@@ -203,6 +203,37 @@ public final class CatCraftTrustStateStore
         return List.copyOf(transitions.values());
     }
 
+    synchronized boolean hasTransition(String key)
+    {
+        return transitions.containsKey(key);
+    }
+
+    synchronized Set<String> keysForClaims(Collection<Long> claimIds)
+    {
+        Set<Long> ids = new HashSet<>(claimIds);
+        Set<String> keys = new HashSet<>();
+        for (TemporaryTrustRecord record : records.values())
+        {
+            if (ids.contains(record.claimId())) keys.add(record.key());
+        }
+        for (String key : transitions.keySet())
+        {
+            int separator = key.indexOf('|');
+            if (separator > 0)
+            {
+                try
+                {
+                    if (ids.contains(Long.parseLong(key.substring(0, separator)))) keys.add(key);
+                }
+                catch (NumberFormatException ignored)
+                {
+                    // Transition keys are validated on construction and load.
+                }
+            }
+        }
+        return keys;
+    }
+
     synchronized void beginTransition(TrustTransition transition)
     {
         Objects.requireNonNull(transition, "transition");
@@ -264,6 +295,32 @@ public final class CatCraftTrustStateStore
             this.transitions.put(transition.key(), transition);
         }
         nextRevision = reservation.nextRevisionExclusive();
+    }
+
+    /**
+     * Commits external invalidation tombstones as one in-memory operation.
+     * The preceding records are removed from the active indexes while their
+     * durable copies remain in each transition until the native mutation has
+     * completed.
+     */
+    synchronized void commitExternalTransitions(Collection<TrustTransition> prepared)
+    {
+        Objects.requireNonNull(prepared, "prepared");
+        List<TrustTransition> transitionsToCommit = List.copyOf(prepared);
+        Set<String> keys = new HashSet<>();
+        for (TrustTransition transition : transitionsToCommit)
+        {
+            if (transition == null || !keys.add(transition.key()))
+            {
+                throw new IllegalArgumentException("duplicate or null trust transition");
+            }
+        }
+        ensureCapacity(keys);
+        for (TrustTransition transition : transitionsToCommit)
+        {
+            this.transitions.put(transition.key(), transition);
+            removeInternal(transition.key());
+        }
     }
 
     synchronized void ensureCapacity(Collection<String> keys)
@@ -387,6 +444,26 @@ public final class CatCraftTrustStateStore
             return Optional.of(records.get(expiry.key()));
         }
         return Optional.empty();
+    }
+
+    /**
+     * Selects one bounded, ordered due batch without changing the durable
+     * record or expiration indexes.  The expiration worker can therefore
+     * prepare a batch with one queue traversal instead of repeatedly scanning
+     * the complete queue for each record.
+     */
+    synchronized List<TemporaryTrustRecord> dueExpiring(long now, int limit)
+    {
+        if (limit <= 0) throw new IllegalArgumentException("limit must be positive");
+        return expirationQueue.stream()
+                .filter(this::isCurrentExpiry)
+                .filter(expiry -> expiry.expiresAt() <= now)
+                .sorted(Comparator.comparingLong(ExpiryKey::expiresAt)
+                        .thenComparingLong(ExpiryKey::revision))
+                .limit(limit)
+                .map(expiry -> records.get(expiry.key()))
+                .filter(Objects::nonNull)
+                .toList();
     }
 
     private boolean isCurrentExpiry(ExpiryKey expiry)
@@ -686,6 +763,12 @@ public final class CatCraftTrustStateStore
             {
                 throw new IOException("Invalid CatCraft trust transition " + index, ex);
             }
+        }
+        Set<String> loadedKeys = new HashSet<>(parsed.keySet());
+        loadedKeys.addAll(parsedTransitions.keySet());
+        if (loadedKeys.size() > maximumRecords)
+        {
+            throw new IOException("CatCraft trust state exceeds configured bound");
         }
         return new ParsedState(parsed, parsedTransitions, parsedNextRevision);
     }

@@ -211,6 +211,79 @@ class CatCraftTrustServiceTest
     }
 
     @Test
+    void externalMutationJournalsTombstoneBeforeNativeChangeAndCompletesAfterward()
+            throws Exception
+    {
+        Path file = directory.resolve("external-write-ahead.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+
+        assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        CatCraftTrustStateStore journal = new CatCraftTrustStateStore(file, 10);
+        journal.load();
+        assertEquals(1, journal.transitionValues().size());
+        assertTrue(journal.transitionValues().get(0).precedingRecord() != null);
+
+        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        CatCraftTrustStateStore completed = new CatCraftTrustStateStore(file, 10);
+        completed.load();
+        assertTrue(completed.transitionValues().isEmpty());
+        assertTrue(completed.values().isEmpty());
+    }
+
+    @Test
+    void externalMutationSaveFailureLeavesRecordAndBlocksNativeCompletion()
+            throws Exception
+    {
+        Path file = directory.resolve("external-save-failure.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
+
+        assertFalse(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
+
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertTrue(store.transitionValues().isEmpty());
+    }
+
+    @Test
+    void externalMutationFinalSaveFailureLeavesDurableTransitionForRestart()
+            throws Exception
+    {
+        Path file = directory.resolve("external-final-save-failure.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+
+        assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
+        Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
+        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+
+        assertFalse(service.isStarted());
+        CatCraftTrustStateStore journal = new CatCraftTrustStateStore(file, 10);
+        journal.load();
+        assertEquals(1, journal.transitionValues().size());
+        assertTrue(journal.values().isEmpty());
+    }
+
+    @Test
     void inactiveServiceDoesNotMutateOrPersistLoadedMetadata() throws Exception
     {
         Path file = directory.resolve("inactive-state.properties");
@@ -402,6 +475,53 @@ class CatCraftTrustServiceTest
         restarted.start();
 
         assertEquals(1, restarted.recordsForClaim(42L).size());
+    }
+
+    @Test
+    void expiredInspectionFailureDisablesServiceWithoutSchedulingRetry() throws Exception
+    {
+        Path file = directory.resolve("expiry-inspection-failure.properties");
+        AtomicLong now = new AtomicLong(1_700_000_000_000L);
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler, now::get, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        access.failResolve = true;
+        now.addAndGet(Duration.ofDays(1).toMillis());
+
+        scheduler.runFuture();
+
+        assertFalse(service.isStarted());
+        assertTrue(scheduler.future.isEmpty());
+        assertTrue(scheduler.nextTick.isEmpty());
+        assertFalse(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
+        assertThrows(IllegalStateException.class, () -> service.grant(
+                List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1)));
+    }
+
+    @Test
+    void expiredJournalFailureDisablesServiceWithoutSchedulingRetry() throws Exception
+    {
+        Path file = directory.resolve("expiry-journal-failure.properties");
+        AtomicLong now = new AtomicLong(1_700_000_000_000L);
+        FakeAccess access = access(42L, OWNER, NONE);
+        FakeScheduler scheduler = new FakeScheduler();
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, scheduler, now::get, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
+        now.addAndGet(Duration.ofDays(1).toMillis());
+
+        scheduler.runFuture();
+
+        assertFalse(service.isStarted());
+        assertTrue(scheduler.future.isEmpty());
+        assertTrue(scheduler.nextTick.isEmpty());
     }
 
     @Test
@@ -879,6 +999,9 @@ class CatCraftTrustServiceTest
                 new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(), now::get, 10);
         restarted.start();
         assertTrue(restarted.recordsForClaim(42L).isEmpty());
+        assertFalse(service.isStarted());
+        assertTrue(scheduler.future.isEmpty());
+        assertTrue(scheduler.nextTick.isEmpty());
     }
 
     @Test
@@ -908,6 +1031,9 @@ class CatCraftTrustServiceTest
                 new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(), now::get, 10);
         restarted.start();
         assertTrue(restarted.recordsForClaim(42L).isEmpty());
+        assertFalse(service.isStarted());
+        assertTrue(scheduler.future.isEmpty());
+        assertTrue(scheduler.nextTick.isEmpty());
     }
 
     @Test
@@ -963,6 +1089,109 @@ class CatCraftTrustServiceTest
         assertFalse(Files.exists(file));
         assertTrue(service.recordsForClaim(1L).isEmpty());
         assertTrue(service.recordsForClaim(2L).isEmpty());
+    }
+
+    @Test
+    void revokeRejectsDuplicateClaimsBeforeAnyPreparation() throws Exception
+    {
+        Path file = directory.resolve("revoke-duplicate.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+
+        assertThrows(IllegalArgumentException.class, () -> service.revoke(
+                List.of(claim, claim), TARGET));
+
+        assertTrue(store.transitionValues().isEmpty());
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertTrue(access.applied.isEmpty());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void laterRevokeCaptureFailureLeavesPreparationAtomic() throws Exception
+    {
+        Path file = directory.resolve("revoke-preparation-atomic.properties");
+        FakeAccess access = new FakeAccess();
+        access.snapshots.put(1L, new ClaimSnapshot(1L, OWNER, null, false));
+        access.snapshots.put(2L, new ClaimSnapshot(2L, OWNER, null, false));
+        access.failCaptureClaimId = 2L;
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        service.start();
+
+        assertThrows(RuntimeException.class, () -> service.revoke(
+                List.of(claim(1L, OWNER), claim(2L, OWNER)), TARGET));
+
+        assertTrue(store.transitionValues().isEmpty());
+        assertTrue(service.recordsForClaim(1L).isEmpty());
+        assertTrue(service.recordsForClaim(2L).isEmpty());
+        assertTrue(access.applied.isEmpty());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void revokeSkipsNoOpDimensionAtRecordCapacity() throws Exception
+    {
+        Path file = directory.resolve("revoke-no-op-capacity.properties");
+        FakeAccess access = access(42L, OWNER, new NativeTrustState(ClaimPermission.Access, false, true));
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 1);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, null);
+
+        service.revoke(List.of(claim), TARGET);
+
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+        assertTrue(store.transitionValues().isEmpty());
+    }
+
+    @Test
+    void grantSaveFailureRollsBackInMemoryTransitionBeforeNativeApply() throws Exception
+    {
+        Path file = directory.resolve("grant-pre-wal-failure.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
+
+        assertThrows(Exception.class, () -> service.grant(
+                List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1)));
+
+        assertTrue(store.transitionValues().isEmpty());
+        assertTrue(service.recordsForClaim(42L).isEmpty());
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
+    void revokeSaveFailureRollsBackInMemoryTransitionBeforeNativeApply() throws Exception
+    {
+        Path file = directory.resolve("revoke-pre-wal-failure.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        CatCraftTrustService service = new CatCraftTrustService(store, access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
+        Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
+
+        assertThrows(Exception.class, () -> service.revoke(List.of(claim), TARGET));
+
+        assertTrue(store.transitionValues().isEmpty());
+        assertEquals(1, service.recordsForClaim(42L).size());
+        assertEquals(new NativeTrustState(ClaimPermission.Access, false, true),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
     }
 
     @Test

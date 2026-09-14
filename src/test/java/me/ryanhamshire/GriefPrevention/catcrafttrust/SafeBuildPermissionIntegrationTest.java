@@ -18,6 +18,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
@@ -52,6 +53,10 @@ class SafeBuildPermissionIntegrationTest
         when(plugin.dataStore.getPlayerData(any(UUID.class))).thenReturn(new PlayerData());
         plugin.catCraftTrustService = service;
         when(service.isStarted()).thenReturn(true);
+        when(service.onExternalPermissionMutation(any(), any(), any())).thenReturn(true);
+        when(service.onExternalTargetMutation(any(), any())).thenReturn(true);
+        when(service.onExternalTargetRemoved(any(), any())).thenReturn(true);
+        when(service.onExternalPermissionsCleared(any())).thenReturn(true);
         GriefPrevention.instance = plugin;
     }
 
@@ -177,8 +182,12 @@ class SafeBuildPermissionIntegrationTest
         String target = BUILDER.toString();
         doAnswer(invocation -> {
             assertNull(claim.getPermission(target));
-            return null;
+            return true;
         }).when(service).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
+        doAnswer(invocation -> {
+            assertEquals(ClaimPermission.Access, claim.getPermission(target));
+            return null;
+        }).when(service).completeExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
 
         claim.setPermission(target, ClaimPermission.Access);
 
@@ -186,12 +195,31 @@ class SafeBuildPermissionIntegrationTest
         clearInvocations(service);
         doAnswer(invocation -> {
             assertNotNull(claim.getPermission(target));
-            return null;
+            return true;
         }).when(service).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
+        doAnswer(invocation -> {
+            assertNull(claim.getPermission(target));
+            return null;
+        }).when(service).completeExternalTargetRemoved(claim, target);
 
         claim.dropPermission(target);
 
         verify(service).onExternalTargetRemoved(claim, target);
+    }
+
+    @Test
+    void externalMutationDoesNotChangeClaimWhenCatCraftWalCannotBeSaved()
+    {
+        Claim claim = claim(42L, OWNER);
+        claim.inDataStore = true;
+        String target = BUILDER.toString();
+        when(service.onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION))
+                .thenReturn(false);
+
+        claim.setPermission(target, ClaimPermission.Access);
+
+        assertNull(claim.getPermission(target));
+        verify(service).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
     }
 
     @Test

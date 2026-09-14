@@ -614,22 +614,35 @@ public class Claim
             return;
         }
 
-        if (permissionLevel == ClaimPermission.Manage)
-            invalidateCatCraftPermission(playerID, TrustDimension.MANAGER);
-        else
-            invalidateCatCraftPermission(playerID, TrustDimension.PERMISSION);
+        TrustDimension dimension = permissionLevel == ClaimPermission.Manage
+                ? TrustDimension.MANAGER : TrustDimension.PERMISSION;
+        if (!invalidateCatCraftPermission(playerID, dimension)) return;
 
-        if (permissionLevel == ClaimPermission.Manage)
-            this.managers.add(playerID.toLowerCase());
-        else
-            this.playerIDToClaimPermissionMap.put(playerID.toLowerCase(), permissionLevel);
+        try
+        {
+            if (permissionLevel == ClaimPermission.Manage)
+                this.managers.add(playerID.toLowerCase());
+            else
+                this.playerIDToClaimPermissionMap.put(playerID.toLowerCase(), permissionLevel);
+        }
+        finally
+        {
+            completeCatCraftPermission(playerID, dimension);
+        }
     }
 
     //revokes a permission for a player or the public
     public void dropPermission(@NotNull String playerID)
     {
-        invalidateRemovedCatCraftTarget(playerID);
-        dropPermissionWithoutCatCraftInvalidation(playerID);
+        if (!invalidateRemovedCatCraftTarget(playerID)) return;
+        try
+        {
+            dropPermissionWithoutCatCraftInvalidation(playerID);
+        }
+        finally
+        {
+            completeExternalTargetRemoved(playerID);
+        }
     }
 
     private void dropPermissionWithoutCatCraftInvalidation(@NotNull String playerID)
@@ -647,8 +660,15 @@ public class Claim
     //clears all permissions (except owner of course)
     public void clearPermissions()
     {
-        invalidateAllCatCraftPermissions();
-        clearPermissionsWithoutCatCraftInvalidation();
+        if (!invalidateAllCatCraftPermissions()) return;
+        try
+        {
+            clearPermissionsWithoutCatCraftInvalidation();
+        }
+        finally
+        {
+            completeExternalPermissionsCleared();
+        }
     }
 
     private void clearPermissionsWithoutCatCraftInvalidation()
@@ -677,40 +697,76 @@ public class Claim
         }
     }
 
-    private void invalidateCatCraftPermission(@NotNull String playerID, @NotNull TrustDimension dimension)
+    private boolean invalidateCatCraftPermission(@NotNull String playerID, @NotNull TrustDimension dimension)
     {
-        if (!this.inDataStore || this.id == null) return;
+        if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return;
-        service.onExternalPermissionMutation(this, playerID, dimension);
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        return service.onExternalPermissionMutation(this, playerID, dimension);
     }
 
-    private void invalidateAllCatCraftPermissions(@NotNull String playerID)
+    private void completeCatCraftPermission(@NotNull String playerID, @NotNull TrustDimension dimension)
     {
         if (!this.inDataStore || this.id == null) return;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
         if (service == null || !service.isStarted() || service.isInternalMutation()) return;
-        service.onExternalTargetMutation(this, playerID);
+        service.completeExternalPermissionMutation(this, playerID, dimension);
     }
 
-    private void invalidateRemovedCatCraftTarget(@NotNull String playerID)
+    private boolean invalidateAllCatCraftPermissions(@NotNull String playerID)
     {
-        if (!this.inDataStore || this.id == null) return;
+        if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return;
-        service.onExternalTargetRemoved(this, playerID);
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        return service.onExternalTargetMutation(this, playerID);
     }
 
-    private void invalidateAllCatCraftPermissions()
+    private void completeExternalTargetMutation(@NotNull String playerID)
     {
         if (!this.inDataStore || this.id == null) return;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
         if (service == null || !service.isStarted() || service.isInternalMutation()) return;
-        service.onExternalPermissionsCleared(this);
+        service.completeExternalTargetMutation(this, playerID);
+    }
+
+    private boolean invalidateRemovedCatCraftTarget(@NotNull String playerID)
+    {
+        if (!this.inDataStore || this.id == null) return true;
+        GriefPrevention plugin = GriefPrevention.instance;
+        CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        return service.onExternalTargetRemoved(this, playerID);
+    }
+
+    private boolean invalidateAllCatCraftPermissions()
+    {
+        if (!this.inDataStore || this.id == null) return true;
+        GriefPrevention plugin = GriefPrevention.instance;
+        CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        return service.onExternalPermissionsCleared(this);
+    }
+
+    private void completeExternalTargetRemoved(@NotNull String playerID)
+    {
+        if (!this.inDataStore || this.id == null) return;
+        GriefPrevention plugin = GriefPrevention.instance;
+        CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return;
+        service.completeExternalTargetRemoved(this, playerID);
+    }
+
+    private void completeExternalPermissionsCleared()
+    {
+        if (!this.inDataStore || this.id == null) return;
+        GriefPrevention plugin = GriefPrevention.instance;
+        CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
+        if (service == null || !service.isStarted() || service.isInternalMutation()) return;
+        service.completeExternalPermissionsCleared(this);
     }
 
     //gets ALL permissions

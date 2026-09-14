@@ -144,6 +144,25 @@ class CatCraftTrustStateStoreTest
     }
 
     @Test
+    void selectsOneOrderedDueBatchWithoutChangingExpirationQueue() throws Exception
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("due-batch-state"), 10_000);
+        for (int index = 0; index < 10_000; index++)
+        {
+            store.put(record(42L, "target-" + index, index < 1_000 ? 100L + index : 10_000L + index,
+                    index + 1L));
+        }
+
+        List<TemporaryTrustRecord> due = store.dueExpiring(2_000L, 1_000);
+
+        assertEquals(1_000, due.size());
+        assertEquals("target-0", due.get(0).target());
+        assertEquals("target-999", due.get(999).target());
+        assertEquals(10_000, store.expirationQueueSize());
+        assertEquals(10_000, store.size());
+    }
+
+    @Test
     void backupRecoveryDoesNotCopyCorruptPrimaryOverValidBackup() throws Exception
     {
         Path file = directory.resolve("temporary-trust.properties");
