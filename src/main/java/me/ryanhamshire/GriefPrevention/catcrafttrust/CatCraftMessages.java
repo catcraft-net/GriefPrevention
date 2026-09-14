@@ -17,4 +17,14 @@ public final class CatCraftMessages
     {
         return PREFIX + " &eInvalid duration.";
     }
+
+    public static String invalidTarget()
+    {
+        return PREFIX + " &eInvalid target.";
+    }
+
+    public static String unavailable()
+    {
+        return PREFIX + " &eTrust service is unavailable.";
+    }
 }

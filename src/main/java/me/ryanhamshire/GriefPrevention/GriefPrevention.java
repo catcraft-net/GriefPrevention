@@ -25,7 +25,13 @@ import com.griefprevention.metrics.MetricsHandler;
 import com.griefprevention.protection.InteractionProtectionHandler;
 import com.griefprevention.protection.ProtectionHelper;
 import me.ryanhamshire.GriefPrevention.DataStore.NoTransferException;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftMessages;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustCommandSupport;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustKind;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustService;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.TemporaryTrustRecord;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.TrustCommandRequest;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.TrustDimension;
 import me.ryanhamshire.GriefPrevention.events.SaveTrappedPlayerEvent;
 import me.ryanhamshire.GriefPrevention.events.TrustChangedEvent;
 import org.bukkit.BanList;
@@ -41,8 +47,10 @@ import org.bukkit.Statistic;
 import org.bukkit.World;
 import org.bukkit.World.Environment;
 import org.bukkit.block.Block;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.AnimalTamer;
@@ -63,6 +71,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.time.Duration;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -71,6 +80,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map.Entry;
+import java.util.Locale;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -96,6 +107,9 @@ public class GriefPrevention extends JavaPlugin
 
     // CatCraft's command-only safe and temporary trust state. Initialized after claim data loads.
     public CatCraftTrustService catCraftTrustService;
+    /** Default maximum trust duration; configuration loading will replace this in the next task. */
+    public Duration config_catCraftTrustMaximumDuration = Duration.ofDays(30);
+    private static final CatCraftTrustCommandSupport CATCRAFT_TRUST_COMMAND_SUPPORT = new CatCraftTrustCommandSupport();
 
     // Event handlers with common functionality
     EntityEventHandler entityEventHandler;
@@ -979,6 +993,34 @@ public class GriefPrevention extends JavaPlugin
     private void setUpCommands()
     {
         new ClaimCommand(this);
+        TabCompleter trustCompleter = (sender, command, alias, args) ->
+                this.completeTrustCommand(command.getName(), sender, args);
+        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust"))
+        {
+            PluginCommand command = this.getCommand(commandName);
+            if (command != null) command.setTabCompleter(trustCompleter);
+        }
+    }
+
+    @Override
+    public @Nullable List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args)
+    {
+        return this.completeTrustCommand(command.getName(), sender, args);
+    }
+
+    private List<String> completeTrustCommand(String commandName, CommandSender sender, String[] args)
+    {
+        if (!isTrustGrantCommand(commandName) || args == null || (args.length != 1 && args.length != 2))
+        {
+            return List.of();
+        }
+        Duration maximum = this.config_catCraftTrustMaximumDuration;
+        if (maximum == null) maximum = Duration.ofDays(30);
+        if (args.length == 1)
+        {
+            return CATCRAFT_TRUST_COMMAND_SUPPORT.completePlayers(sender, args[0], this.getServer().getOnlinePlayers());
+        }
+        return CATCRAFT_TRUST_COMMAND_SUPPORT.completeDurations(args[1], maximum);
     }
 
     //handles slash commands
@@ -1208,15 +1250,10 @@ public class GriefPrevention extends JavaPlugin
             return true;
         }
 
-        //trust <player>
-        else if (cmd.getName().equalsIgnoreCase("trust") && player != null)
+        //trust-family grants
+        else if (isTrustGrantCommand(cmd.getName()) && player != null)
         {
-            //requires exactly one parameter, the other player's name
-            if (args.length != 1) return false;
-
-            //most trust commands use this helper method, it keeps them consistent
-            this.handleTrustCommand(player, ClaimPermission.Build, args[0]);
-
+            this.handleTrustCommand(player, cmd.getName(), args);
             return true;
         }
 
@@ -1298,6 +1335,7 @@ public class GriefPrevention extends JavaPlugin
             ArrayList<String> accessors = new ArrayList<>();
             ArrayList<String> managers = new ArrayList<>();
             claim.getPermissions(builders, containers, accessors, managers);
+            List<TemporaryTrustRecord> trustRecords = this.trustRecordsForClaim(claim);
 
             GriefPrevention.sendMessage(player, TextMode.Info, Messages.TrustListHeader, claim.getOwnerName());
 
@@ -1307,7 +1345,7 @@ public class GriefPrevention extends JavaPlugin
             if (!managers.isEmpty())
             {
                 for (String manager : managers)
-                    permissions.append(this.trustEntryToPlayerName(manager)).append(' ');
+                    permissions.append(this.formatTrustEntry(manager, TrustDimension.MANAGER, trustRecords)).append(' ');
             }
 
             player.sendMessage(permissions.toString());
@@ -1317,7 +1355,7 @@ public class GriefPrevention extends JavaPlugin
             if (!builders.isEmpty())
             {
                 for (String builder : builders)
-                    permissions.append(this.trustEntryToPlayerName(builder)).append(' ');
+                    permissions.append(this.formatTrustEntry(builder, TrustDimension.PERMISSION, trustRecords)).append(' ');
             }
 
             player.sendMessage(permissions.toString());
@@ -1327,7 +1365,7 @@ public class GriefPrevention extends JavaPlugin
             if (!containers.isEmpty())
             {
                 for (String container : containers)
-                    permissions.append(this.trustEntryToPlayerName(container)).append(' ');
+                    permissions.append(this.formatTrustEntry(container, TrustDimension.PERMISSION, trustRecords)).append(' ');
             }
 
             player.sendMessage(permissions.toString());
@@ -1337,10 +1375,24 @@ public class GriefPrevention extends JavaPlugin
             if (!accessors.isEmpty())
             {
                 for (String accessor : accessors)
-                    permissions.append(this.trustEntryToPlayerName(accessor)).append(' ');
+                {
+                    if (this.isBuildTrustEntry(accessor, trustRecords)) continue;
+                    permissions.append(this.formatTrustEntry(accessor, TrustDimension.PERMISSION, trustRecords)).append(' ');
+                }
             }
 
             player.sendMessage(permissions.toString());
+
+            StringBuilder buildTrust = new StringBuilder(ChatColor.YELLOW + "> Build Trust:");
+            for (TemporaryTrustRecord record : trustRecords)
+            {
+                if (record.dimension() != TrustDimension.PERMISSION
+                        || record.appliedKind() != CatCraftTrustKind.BUILD) continue;
+                buildTrust.append(' ').append(this.trustEntryToPlayerName(record.target()))
+                        .append(" (").append(this.trustRemaining(record)).append(')');
+            }
+            if (buildTrust.length() > (ChatColor.YELLOW + "> Build Trust:").length())
+                player.sendMessage(buildTrust.toString());
 
             player.sendMessage(
                     ChatColor.GOLD + this.dataStore.getMessage(Messages.Manage) + " " +
@@ -1535,39 +1587,6 @@ public class GriefPrevention extends JavaPlugin
                 //save changes
                 this.dataStore.saveClaim(claim);
             }
-
-            return true;
-        }
-
-        //accesstrust <player>
-        else if (cmd.getName().equalsIgnoreCase("accesstrust") && player != null)
-        {
-            //requires exactly one parameter, the other player's name
-            if (args.length != 1) return false;
-
-            this.handleTrustCommand(player, ClaimPermission.Access, args[0]);
-
-            return true;
-        }
-
-        //containertrust <player>
-        else if (cmd.getName().equalsIgnoreCase("containertrust") && player != null)
-        {
-            //requires exactly one parameter, the other player's name
-            if (args.length != 1) return false;
-
-            this.handleTrustCommand(player, ClaimPermission.Inventory, args[0]);
-
-            return true;
-        }
-
-        //permissiontrust <player>
-        else if (cmd.getName().equalsIgnoreCase("permissiontrust") && player != null)
-        {
-            //requires exactly one parameter, the other player's name
-            if (args.length != 1) return false;
-
-            this.handleTrustCommand(player, ClaimPermission.Manage, args[0]);
 
             return true;
         }
@@ -2333,6 +2352,65 @@ public class GriefPrevention extends JavaPlugin
     public enum IgnoreMode
     {None, StandardIgnore, AdminIgnore}
 
+    private List<TemporaryTrustRecord> trustRecordsForClaim(Claim claim)
+    {
+        if (this.catCraftTrustService == null || !this.catCraftTrustService.isStarted() || claim.getID() == null)
+            return List.of();
+        try
+        {
+            List<TemporaryTrustRecord> records = this.catCraftTrustService.recordsForClaim(claim.getID());
+            return records == null ? List.of() : records;
+        }
+        catch (RuntimeException ignored)
+        {
+            return List.of();
+        }
+    }
+
+    private String formatTrustEntry(String entry,
+                                    TrustDimension dimension,
+                                    List<TemporaryTrustRecord> records)
+    {
+        TemporaryTrustRecord record = findTrustRecord(entry, dimension, records);
+        String remaining = record == null ? "Forever" : this.trustRemaining(record);
+        return this.trustEntryToPlayerName(entry) + " (" + remaining + ")";
+    }
+
+    private boolean isBuildTrustEntry(String entry, List<TemporaryTrustRecord> records)
+    {
+        TemporaryTrustRecord record = findTrustRecord(entry, TrustDimension.PERMISSION, records);
+        return record != null && record.appliedKind() == CatCraftTrustKind.BUILD;
+    }
+
+    private static TemporaryTrustRecord findTrustRecord(String entry,
+                                                        TrustDimension dimension,
+                                                        List<TemporaryTrustRecord> records)
+    {
+        String normalized = entry == null ? "" : entry.trim().toLowerCase(Locale.ROOT);
+        for (TemporaryTrustRecord record : records)
+        {
+            if (record.dimension() == dimension && record.target().equals(normalized)) return record;
+        }
+        return null;
+    }
+
+    private static String trustRemaining(TemporaryTrustRecord record)
+    {
+        if (record.expiresAtMillis() == 0L) return "Forever";
+        long now = System.currentTimeMillis();
+        if (record.expiresAtMillis() <= now) return "Expired";
+        long remainingMillis = record.expiresAtMillis() - now;
+        long minutes = remainingMillis / 60_000L;
+        if (remainingMillis % 60_000L != 0L) minutes++;
+        if (minutes < 60L) return minutes + "m";
+        long hours = minutes / 60L;
+        if (minutes % 60L != 0L) hours++;
+        if (hours < 24L) return hours + "h";
+        long days = hours / 24L;
+        if (hours % 24L != 0L) days++;
+        return days + "d";
+    }
+
     private String trustEntryToPlayerName(String entry)
     {
         if (entry.startsWith("[") || entry.equals("public"))
@@ -2398,30 +2476,71 @@ public class GriefPrevention extends JavaPlugin
 
     }
 
-    //helper method keeps the trust commands consistent and eliminates duplicate code
-    private void handleTrustCommand(Player player, ClaimPermission permissionLevel, String recipientName)
+    private static boolean isTrustGrantCommand(String commandName)
     {
-        //determine which claim the player is standing in
-        Claim claim = this.dataStore.getClaimAt(player.getLocation(), true /*ignore height*/, null);
+        if (commandName == null) return false;
+        return switch (commandName.toLowerCase(Locale.ROOT))
+        {
+            case "buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust", "managetrust" -> true;
+            default -> false;
+        };
+    }
 
-        //validate player or group argument
+    private static void sendCatCraftMessage(Player player, String message)
+    {
+        player.sendMessage(ChatColor.translateAlternateColorCodes('&', message));
+    }
+
+    private void handleTrustCommand(Player player, String commandName, String[] args)
+    {
+        Duration maximum = this.config_catCraftTrustMaximumDuration;
+        if (maximum == null) maximum = Duration.ofDays(30);
+        Optional<TrustCommandRequest> parsed = CATCRAFT_TRUST_COMMAND_SUPPORT.parse(
+                commandName, args, maximum, message -> sendCatCraftMessage(player, message));
+        if (parsed.isEmpty()) return;
+
+        TrustCommandRequest request = parsed.get();
+        String requestedTarget = request.target();
+        if (!isValidTrustTarget(requestedTarget))
+        {
+            sendCatCraftMessage(player, CatCraftMessages.invalidTarget());
+            return;
+        }
+
+        Claim claim = this.dataStore.getClaimAt(player.getLocation(), true /*ignore height*/, null);
+        if (request.kind() == CatCraftTrustKind.BUILD && claim == null)
+        {
+            GriefPrevention.sendMessage(player, TextMode.Err, Messages.GrantPermissionNoClaim);
+            return;
+        }
+        if (request.kind() == CatCraftTrustKind.BUILD
+                && claim.checkPermission(player, ClaimPermission.Manage, null) != null)
+        {
+            GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoPermissionTrust, claim.getOwnerName());
+            return;
+        }
+
+        boolean serviceStarted = this.catCraftTrustService != null && this.catCraftTrustService.isStarted();
+        if ((request.kind() == CatCraftTrustKind.BUILD || request.duration() != null) && !serviceStarted)
+        {
+            sendCatCraftMessage(player, CatCraftMessages.unavailable());
+            return;
+        }
+
+        String recipientName = requestedTarget;
         String permission = null;
         OfflinePlayer otherPlayer = null;
         UUID recipientID = null;
-        if (recipientName.startsWith("[") && recipientName.endsWith("]"))
+        if (requestedTarget.startsWith("[") && requestedTarget.endsWith("]"))
         {
-            permission = recipientName.substring(1, recipientName.length() - 1);
-            if (permission == null || permission.isEmpty())
-            {
-                GriefPrevention.sendMessage(player, TextMode.Err, Messages.InvalidPermissionID);
-                return;
-            }
+            permission = requestedTarget.substring(1, requestedTarget.length() - 1);
         }
         else
         {
-            otherPlayer = this.resolvePlayerByName(recipientName);
-            boolean isPermissionFormat = recipientName.contains(".");
-            if (otherPlayer == null && !recipientName.equals("public") && !recipientName.equals("all") && !isPermissionFormat)
+            otherPlayer = this.resolvePlayerByName(requestedTarget);
+            boolean isPermissionFormat = requestedTarget.contains(".");
+            if (otherPlayer == null && !requestedTarget.equalsIgnoreCase("public")
+                    && !requestedTarget.equalsIgnoreCase("all") && !isPermissionFormat)
             {
                 GriefPrevention.sendMessage(player, TextMode.Err, Messages.PlayerNotFound2);
                 return;
@@ -2429,13 +2548,13 @@ public class GriefPrevention extends JavaPlugin
 
             if (otherPlayer == null && isPermissionFormat)
             {
-                //player does not exist and argument has a period so this is a permission instead
-                permission = recipientName;
+                permission = requestedTarget;
             }
             else if (otherPlayer != null)
             {
                 recipientName = otherPlayer.getName();
                 recipientID = otherPlayer.getUniqueId();
+                if (recipientName == null) recipientName = requestedTarget;
             }
             else
             {
@@ -2443,7 +2562,6 @@ public class GriefPrevention extends JavaPlugin
             }
         }
 
-        //determine which claims should be modified
         ArrayList<Claim> targetClaims = new ArrayList<>();
         if (claim == null)
         {
@@ -2452,17 +2570,15 @@ public class GriefPrevention extends JavaPlugin
         }
         else
         {
-            //check permission here
-            if (claim.checkPermission(player, ClaimPermission.Manage, null) != null)
+            if (request.kind() != CatCraftTrustKind.BUILD
+                    && claim.checkPermission(player, ClaimPermission.Manage, null) != null)
             {
                 GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoPermissionTrust, claim.getOwnerName());
                 return;
             }
-
             targetClaims.add(claim);
         }
 
-        //if we didn't determine which claims to modify, tell the player to be specific
         if (targetClaims.isEmpty())
         {
             GriefPrevention.sendMessage(player, TextMode.Err, Messages.GrantPermissionNoClaim);
@@ -2473,7 +2589,6 @@ public class GriefPrevention extends JavaPlugin
         if (permission != null)
         {
             identifierToAdd = "[" + permission + "]";
-            //replace recipientName as well so the success message clearly signals a permission
             recipientName = identifierToAdd;
         }
         else if (recipientID != null)
@@ -2481,63 +2596,76 @@ public class GriefPrevention extends JavaPlugin
             identifierToAdd = recipientID.toString();
         }
 
-        //calling the event
-        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, permissionLevel, true, identifierToAdd);
+        ClaimPermission nativePermission = nativePermissionFor(request.kind());
+        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, nativePermission, true, identifierToAdd);
         Bukkit.getPluginManager().callEvent(event);
-
-        if (event.isCancelled())
+        if (event.isCancelled()) return;
+        if (event.getClaims().isEmpty())
         {
+            GriefPrevention.sendMessage(player, TextMode.Err, Messages.GrantPermissionNoClaim);
             return;
         }
 
-        //apply changes
-        for (Claim currentClaim : event.getClaims())
+        if (serviceStarted)
         {
-            if (permissionLevel == null)
+            try
             {
-                if (!currentClaim.managers.contains(identifierToAdd))
-                {
-                    currentClaim.managers.add(identifierToAdd);
-                }
+                this.catCraftTrustService.grant(event.getClaims(), identifierToAdd, request.kind(), request.duration());
             }
-            else
+            catch (IOException | RuntimeException failure)
             {
-                currentClaim.setPermission(identifierToAdd, permissionLevel);
+                sendCatCraftMessage(player, CatCraftMessages.unavailable());
+                return;
             }
-            this.dataStore.saveClaim(currentClaim);
-        }
-
-        //notify player
-        if (recipientName.equals("public")) recipientName = this.dataStore.getMessage(Messages.CollectivePublic);
-        String permissionDescription;
-        if (permissionLevel == null)
-        {
-            permissionDescription = this.dataStore.getMessage(Messages.PermissionsPermission);
-        }
-        else if (permissionLevel == ClaimPermission.Build)
-        {
-            permissionDescription = this.dataStore.getMessage(Messages.BuildPermission);
-        }
-        else if (permissionLevel == ClaimPermission.Access)
-        {
-            permissionDescription = this.dataStore.getMessage(Messages.AccessPermission);
-        }
-        else //ClaimPermission.Inventory
-        {
-            permissionDescription = this.dataStore.getMessage(Messages.ContainersPermission);
-        }
-
-        String location;
-        if (claim == null)
-        {
-            location = this.dataStore.getMessage(Messages.LocationAllClaims);
         }
         else
         {
-            location = this.dataStore.getMessage(Messages.LocationCurrentClaim);
+            for (Claim currentClaim : event.getClaims())
+            {
+                currentClaim.setPermission(identifierToAdd, nativePermission);
+                this.dataStore.saveClaim(currentClaim);
+            }
         }
 
-        GriefPrevention.sendMessage(player, TextMode.Success, Messages.GrantPermissionConfirmation, recipientName, permissionDescription, location);
+        if (recipientName.equalsIgnoreCase("public"))
+            recipientName = this.dataStore.getMessage(Messages.CollectivePublic);
+        String permissionDescription = switch (request.kind())
+        {
+            case BUILD -> this.dataStore.getMessage(Messages.BuildPermission);
+            case ACCESS -> this.dataStore.getMessage(Messages.AccessPermission);
+            case CONTAINER -> this.dataStore.getMessage(Messages.ContainersPermission);
+            case FULL -> this.dataStore.getMessage(Messages.BuildPermission);
+            case MANAGE -> this.dataStore.getMessage(Messages.PermissionsPermission);
+        };
+        String location = claim == null
+                ? this.dataStore.getMessage(Messages.LocationAllClaims)
+                : this.dataStore.getMessage(Messages.LocationCurrentClaim);
+        GriefPrevention.sendMessage(player, TextMode.Success, Messages.GrantPermissionConfirmation,
+                recipientName, permissionDescription, location);
+    }
+
+    private static boolean isValidTrustTarget(String target)
+    {
+        if (target == null) return false;
+        String trimmed = target.trim();
+        if (trimmed.isEmpty() || target.length() > TemporaryTrustRecord.MAX_TARGET_LENGTH
+                || trimmed.length() > TemporaryTrustRecord.MAX_TARGET_LENGTH) return false;
+        if (trimmed.startsWith("[") || trimmed.endsWith("]"))
+        {
+            return trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length() > 2;
+        }
+        return true;
+    }
+
+    private static ClaimPermission nativePermissionFor(CatCraftTrustKind kind)
+    {
+        return switch (kind)
+        {
+            case BUILD, ACCESS -> ClaimPermission.Access;
+            case CONTAINER -> ClaimPermission.Inventory;
+            case FULL -> ClaimPermission.Build;
+            case MANAGE -> ClaimPermission.Manage;
+        };
     }
 
     //helper method to resolve a player by name
