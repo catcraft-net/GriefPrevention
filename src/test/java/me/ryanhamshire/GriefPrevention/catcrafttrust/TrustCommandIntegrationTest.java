@@ -195,7 +195,10 @@ class TrustCommandIntegrationTest
                 CatCraftTrustKind.CONTAINER, CatCraftTrustKind.FULL, CatCraftTrustKind.MANAGE);
         List<ClaimPermission> permissions = new ArrayList<>(List.of(ClaimPermission.Access, ClaimPermission.Access,
                 ClaimPermission.Inventory, ClaimPermission.Build));
-        permissions.add(null);
+        // The original GriefPrevention permissiontrust path passed Manage into
+        // TrustChangedEvent. Keep that public event payload while the service
+        // receives the independent MANAGE trust kind.
+        permissions.add(ClaimPermission.Manage);
         ArgumentCaptor<TrustChangedEvent> events = ArgumentCaptor.forClass(TrustChangedEvent.class);
 
         for (int index = 0; index < commandNames.size(); index++)
@@ -246,8 +249,7 @@ class TrustCommandIntegrationTest
         verify(player, org.mockito.Mockito.atLeastOnce()).sendMessage(permanentMessages.capture());
         String permanentOutput = String.join("\n", permanentMessages.getAllValues());
         assertTrue(permanentOutput.contains("[CatCraft]"));
-        assertTrue(permanentOutput.contains("Build Trust"));
-        assertTrue(permanentOutput.contains("Forever"));
+        assertTrue(permanentOutput.contains("now has Build Trust for forever"));
 
         clearInvocations(player, service);
         when(command.getName()).thenReturn("trust");
@@ -256,8 +258,46 @@ class TrustCommandIntegrationTest
         verify(player, org.mockito.Mockito.atLeastOnce()).sendMessage(timedMessages.capture());
         String timedOutput = String.join("\n", timedMessages.getAllValues());
         assertTrue(timedOutput.contains("[CatCraft]"));
-        assertTrue(timedOutput.contains("Full Trust"));
-        assertTrue(timedOutput.contains("1d"));
+        assertTrue(timedOutput.contains("message now has Full Trust for 1 day"));
+    }
+
+    @Test
+    void groupTargetAmpersandIsDisplayedLiterallyWhileCanonicalServiceTargetIsUnchanged()
+            throws Exception
+    {
+        Claim current = mockClaim(54L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+        when(command.getName()).thenReturn("permissiontrust");
+
+        String target = "[catcraft.builders&a]";
+        assertTrue(plugin.onCommand(player, command, "permissiontrust", new String[]{target}));
+
+        verify(service).grant(anyCollection(), eq(target), eq(CatCraftTrustKind.MANAGE), isNull(Duration.class));
+        ArgumentCaptor<String> messages = ArgumentCaptor.forClass(String.class);
+        verify(player, org.mockito.Mockito.atLeastOnce()).sendMessage(messages.capture());
+        String output = String.join("\n", messages.getAllValues());
+        assertTrue(output.contains(target));
+        assertTrue(output.contains("now has Permission Trust for forever"));
+    }
+
+    @Test
+    void successUsesHumanWordsForExactMinuteHourDayAndWeekDurations()
+            throws Exception
+    {
+        Claim current = mockClaim(55L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+        when(command.getName()).thenReturn("trust");
+
+        List<String> durations = List.of("1m", "2h", "3d", "4w");
+        List<String> descriptions = List.of("1 minute", "2 hours", "3 days", "4 weeks");
+        for (int index = 0; index < durations.size(); index++)
+        {
+            clearInvocations(player, service);
+            assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public", durations.get(index)}));
+            ArgumentCaptor<String> message = ArgumentCaptor.forClass(String.class);
+            verify(player).sendMessage(message.capture());
+            assertTrue(message.getValue().contains("message now has Full Trust for " + descriptions.get(index)));
+        }
     }
 
     @Test

@@ -38,8 +38,8 @@ public final class CatCraftMessages
         return PREFIX + " &eYou cannot manage this claim.";
     }
 
-    public static String grantSuccess(String target, String kind, String duration, String scope)
+    public static String grantSuccessPrefix()
     {
-        return PREFIX + " &aGranted " + kind + " to " + target + " for " + duration + " (" + scope + ").";
+        return PREFIX + " &a";
     }
 }

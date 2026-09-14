@@ -2598,11 +2598,9 @@ public class GriefPrevention extends JavaPlugin
         }
 
         ClaimPermission nativePermission = nativePermissionFor(request.kind());
-        // PermissionTrust historically exposed a null event level even though the
-        // native operation is Manage. Preserve that public payload while routing
-        // the independent MANAGE trust kind to the service.
-        ClaimPermission eventPermission = request.kind() == CatCraftTrustKind.MANAGE ? null : nativePermission;
-        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, eventPermission, true, identifierToAdd);
+        // Preserve GriefPrevention's original event payload while routing the
+        // independent MANAGE trust kind to the CatCraft service.
+        TrustChangedEvent event = new TrustChangedEvent(player, targetClaims, nativePermission, true, identifierToAdd);
         Bukkit.getPluginManager().callEvent(event);
         if (event.isCancelled()) return;
         if (event.getClaims().isEmpty())
@@ -2638,8 +2636,21 @@ public class GriefPrevention extends JavaPlugin
         String location = claim == null
                 ? this.dataStore.getMessage(Messages.LocationAllClaims)
                 : this.dataStore.getMessage(Messages.LocationCurrentClaim);
-        sendCatCraftMessage(player, CatCraftMessages.grantSuccess(recipientName, permissionDescription,
-                trustDurationDescription(request.duration()), location));
+        sendCatCraftGrantSuccess(player, recipientName, permissionDescription,
+                trustDurationDescription(request.duration()), location);
+    }
+
+    private static void sendCatCraftGrantSuccess(Player player,
+                                                 String target,
+                                                 String kind,
+                                                 String duration,
+                                                 String scope)
+    {
+        String prefix = ChatColor.translateAlternateColorCodes('&', CatCraftMessages.grantSuccessPrefix());
+        String coloredScope = ChatColor.translateAlternateColorCodes('&', scope == null ? "" : scope);
+        String literalTarget = ChatColor.stripColor(target == null ? "" : target);
+        player.sendMessage(prefix + literalTarget + " now has " + kind + " for " + duration
+                + " (" + coloredScope + ").");
     }
 
     private static String trustKindDescription(CatCraftTrustKind kind)
@@ -2656,12 +2667,20 @@ public class GriefPrevention extends JavaPlugin
 
     private static String trustDurationDescription(Duration duration)
     {
-        if (duration == null || duration.isZero()) return "Forever";
+        if (duration == null || duration.isZero()) return "forever";
         long minutes = duration.toMinutes();
-        if (minutes % (7L * 24L * 60L) == 0L) return (minutes / (7L * 24L * 60L)) + "w";
-        if (minutes % (24L * 60L) == 0L) return (minutes / (24L * 60L)) + "d";
-        if (minutes % 60L == 0L) return (minutes / 60L) + "h";
-        return minutes + "m";
+        if (minutes % (7L * 24L * 60L) == 0L)
+            return humanDuration(minutes / (7L * 24L * 60L), "week");
+        if (minutes % (24L * 60L) == 0L)
+            return humanDuration(minutes / (24L * 60L), "day");
+        if (minutes % 60L == 0L)
+            return humanDuration(minutes / 60L, "hour");
+        return humanDuration(minutes, "minute");
+    }
+
+    private static String humanDuration(long amount, String unit)
+    {
+        return amount + " " + unit + (amount == 1L ? "" : "s");
     }
 
     private static boolean isValidTrustTarget(String target)
