@@ -25,6 +25,7 @@ import com.griefprevention.metrics.MetricsHandler;
 import com.griefprevention.protection.InteractionProtectionHandler;
 import com.griefprevention.protection.ProtectionHelper;
 import me.ryanhamshire.GriefPrevention.DataStore.NoTransferException;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustService;
 import me.ryanhamshire.GriefPrevention.events.SaveTrappedPlayerEvent;
 import me.ryanhamshire.GriefPrevention.events.TrustChangedEvent;
 import org.bukkit.BanList;
@@ -92,6 +93,9 @@ public class GriefPrevention extends JavaPlugin
 
     //this handles data storage, like player and region data
     public DataStore dataStore;
+
+    // CatCraft's command-only safe and temporary trust state. Initialized after claim data loads.
+    public CatCraftTrustService catCraftTrustService;
 
     // Event handlers with common functionality
     EntityEventHandler entityEventHandler;

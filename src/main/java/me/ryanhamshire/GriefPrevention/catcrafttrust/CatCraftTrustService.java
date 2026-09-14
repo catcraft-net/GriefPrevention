@@ -294,6 +294,14 @@ public final class CatCraftTrustService
         scheduleNextExpiration();
     }
 
+    public void onExternalPermissionsCleared(Claim claim)
+    {
+        if (internalMutationDepth > 0 || claim == null || claim.getID() == null) return;
+        store.removeClaim(claim.getID());
+        persistBestEffort();
+        scheduleNextExpiration();
+    }
+
     public List<TemporaryTrustRecord> recordsForClaim(long claimId)
     {
         return store.forClaim(claimId);
