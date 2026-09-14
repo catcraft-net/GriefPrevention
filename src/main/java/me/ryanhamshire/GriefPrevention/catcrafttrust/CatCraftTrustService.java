@@ -89,17 +89,28 @@ public final class CatCraftTrustService
     public void start() throws IOException
     {
         cancelScheduledExpiration();
+        loaded = false;
         store.load();
-        loaded = true;
-        reconcileStartup();
-        scheduleNextExpiration();
+        try
+        {
+            reconcileStartup();
+            loaded = true;
+            scheduleNextExpiration();
+        }
+        catch (IOException | RuntimeException | Error failure)
+        {
+            loaded = false;
+            cancelScheduledExpiration();
+            throw failure;
+        }
     }
 
     public void stop() throws IOException
     {
         cancelScheduledExpiration();
-        if (loaded) store.save();
+        boolean wasLoaded = loaded;
         loaded = false;
+        if (wasLoaded) store.save();
     }
 
     public boolean isSafeBuilder(Claim claim, UUID playerId, @Nullable Player player)
@@ -120,6 +131,7 @@ public final class CatCraftTrustService
                       CatCraftTrustKind kind,
                       @Nullable Duration duration) throws IOException
     {
+        requireStarted();
         Objects.requireNonNull(claims, "claims");
         Objects.requireNonNull(kind, "kind");
         String canonicalTarget = canonicalTarget(target);
@@ -189,6 +201,7 @@ public final class CatCraftTrustService
 
     public void revoke(Collection<Claim> claims, String target) throws IOException
     {
+        requireStarted();
         Objects.requireNonNull(claims, "claims");
         String canonicalTarget = canonicalTarget(target);
         processDue(nowMillis.getAsLong());
@@ -251,6 +264,7 @@ public final class CatCraftTrustService
 
     public void clearClaims(Collection<Claim> claims) throws IOException
     {
+        requireStarted();
         Objects.requireNonNull(claims, "claims");
         boolean changed = false;
         for (Claim claim : claims)
@@ -648,6 +662,11 @@ public final class CatCraftTrustService
         {
             internalMutationDepth--;
         }
+    }
+
+    private void requireStarted()
+    {
+        if (!loaded) throw new IllegalStateException("CatCraft trust service is not started");
     }
 
     private record GrantMutation(long claimId, String target, TrustDimension dimension,

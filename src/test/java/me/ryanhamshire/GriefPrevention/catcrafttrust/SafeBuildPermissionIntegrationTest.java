@@ -78,6 +78,55 @@ class SafeBuildPermissionIntegrationTest
     }
 
     @Test
+    void publicSafeBuildDecisionUsesTheSameRestrictedPermissionMatrix()
+    {
+        Claim claim = claim(44L, OWNER);
+        when(service.isSafeBuilder(claim, BUILDER, null)).thenReturn(true);
+
+        assertNull(check(claim, BUILDER, ClaimPermission.Build));
+        assertNull(check(claim, BUILDER, ClaimPermission.Access));
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+    }
+
+    @Test
+    void permissionNodeSafeBuildDecisionWorksForAnOnlinePlayer()
+    {
+        Claim claim = claim(45L, OWNER);
+        Player player = mock(Player.class);
+        when(player.getUniqueId()).thenReturn(BUILDER);
+        when(player.hasPermission("catcraft.builders")).thenReturn(true);
+        when(service.isSafeBuilder(claim, BUILDER, player)).thenReturn(true);
+
+        assertNull(check(claim, player, ClaimPermission.Build));
+        assertNotNull(check(claim, player, ClaimPermission.Inventory));
+    }
+
+    @Test
+    void unrestrictedSubdivisionCanReceiveInheritedSafeBuildDecision()
+    {
+        Claim parent = claim(46L, OWNER);
+        Claim child = claim(47L, null);
+        child.parent = parent;
+        when(service.isSafeBuilder(child, BUILDER, null)).thenReturn(true);
+
+        assertNull(check(child, BUILDER, ClaimPermission.Build));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Inventory));
+    }
+
+    @Test
+    void restrictedSubdivisionDeniesWhenServiceStopsInheritance()
+    {
+        Claim parent = claim(48L, OWNER);
+        Claim child = claim(49L, null);
+        child.parent = parent;
+        child.setSubclaimRestrictions(true);
+        when(service.isSafeBuilder(child, BUILDER, null)).thenReturn(false);
+
+        assertNotNull(check(child, BUILDER, ClaimPermission.Build));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Access));
+    }
+
+    @Test
     void overlayFailureFailsClosedWithoutBreakingNormalPermissionChecks()
     {
         Claim claim = claim(42L, OWNER);

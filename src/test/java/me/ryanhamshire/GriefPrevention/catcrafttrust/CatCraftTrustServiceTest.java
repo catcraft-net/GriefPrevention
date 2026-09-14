@@ -230,6 +230,60 @@ class CatCraftTrustServiceTest
     }
 
     @Test
+    void commandMutationApisRejectInactiveService() throws Exception
+    {
+        Path file = directory.resolve("inactive-commands.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+        Claim claim = claim(42L, OWNER);
+
+        assertThrows(IllegalStateException.class, () -> service.grant(
+                List.of(claim), TARGET, CatCraftTrustKind.BUILD, null));
+        assertThrows(IllegalStateException.class, () -> service.revoke(List.of(claim), TARGET));
+        assertThrows(IllegalStateException.class, () -> service.clearClaims(List.of(claim)));
+        assertTrue(access.applied.isEmpty());
+        assertFalse(Files.exists(file));
+    }
+
+    @Test
+    void failedStartupDoesNotLeaveServiceActive() throws Exception
+    {
+        Path file = directory.resolve("failed-start.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(new TemporaryTrustRecord(42L, TARGET, CatCraftTrustKind.BUILD,
+                TrustDimension.PERMISSION, NONE,
+                new NativeTrustState(ClaimPermission.Access, false, true),
+                0L, 1L, OWNER));
+        store.save();
+        FakeAccess access = access(42L, OWNER,
+                new NativeTrustState(ClaimPermission.Access, false, true));
+        access.failResolve = true;
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(),
+                () -> 1_700_000_000_000L, 10);
+
+        assertThrows(RuntimeException.class, service::start);
+        assertFalse(service.isStarted());
+    }
+
+    @Test
+    void failedStopStillMakesServiceInactive() throws Exception
+    {
+        Path file = directory.resolve("failed-stop.properties");
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access(42L, OWNER, NONE),
+                new FakeScheduler(), () -> 1_700_000_000_000L, 10);
+        service.start();
+        Files.createDirectory(file);
+        Files.writeString(file.resolve("keep"), "force replacement failure");
+
+        assertThrows(Exception.class, service::stop);
+        assertFalse(service.isStarted());
+    }
+
+    @Test
     void noOpExternalMutationDoesNotCreateOrRewriteStateFile() throws Exception
     {
         Path file = directory.resolve("no-op-external-state.properties");
@@ -661,10 +715,12 @@ class CatCraftTrustServiceTest
         private final Map<String, NativeTrustState> states = new HashMap<>();
         private final List<String> applied = new ArrayList<>();
         private boolean failApply;
+        private boolean failResolve;
 
         @Override
         public ClaimSnapshot resolve(long claimId)
         {
+            if (failResolve) throw new IllegalStateException("resolve failure");
             return snapshots.get(claimId);
         }
 
