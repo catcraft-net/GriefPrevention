@@ -38,7 +38,6 @@ public final class CatCraftTrustService
     private final int maximumExpirationsPerTick;
     private final Logger logger;
     private ScheduledHandle expirationHandle;
-    private boolean nextTickScheduled;
     private boolean loaded;
     private int internalMutationDepth;
 
@@ -89,12 +88,7 @@ public final class CatCraftTrustService
 
     public void start() throws IOException
     {
-        if (expirationHandle != null)
-        {
-            expirationHandle.cancel();
-            expirationHandle = null;
-        }
-        nextTickScheduled = false;
+        cancelScheduledExpiration();
         store.load();
         loaded = true;
         reconcileStartup();
@@ -103,9 +97,7 @@ public final class CatCraftTrustService
 
     public void stop() throws IOException
     {
-        if (expirationHandle != null) expirationHandle.cancel();
-        expirationHandle = null;
-        nextTickScheduled = false;
+        cancelScheduledExpiration();
         if (loaded) store.save();
         loaded = false;
     }
@@ -116,7 +108,7 @@ public final class CatCraftTrustService
         Set<Long> visited = new HashSet<>();
         Long claimId = claim.getID();
         ClaimSnapshot fallback = new ClaimSnapshot(claimId, claim.getOwnerID(),
-                claim.parent == null ? null : claim.parent.getID(), false);
+                claim.parent == null ? null : claim.parent.getID(), claim.getSubclaimRestrictions());
         ClaimSnapshot resolved = claimAccess.resolve(claimId);
         return isSafeBuilder(claimId, playerId, player,
                 resolved == null ? fallback : resolved, visited);
@@ -144,19 +136,21 @@ public final class CatCraftTrustService
                     && current.equals(previousRecord.get().expectedState())
                     ? previousRecord.get().previousState() : current;
             NativeTrustState expected = desiredState(kind, current);
-            if (duration == null)
+            TemporaryTrustRecord precedingRecord = previousRecord.isPresent()
+                    && current.equals(previousRecord.get().expectedState())
+                    ? previousRecord.get() : null;
+            TemporaryTrustRecord intendedRecord = null;
+            if (duration != null || kind == CatCraftTrustKind.BUILD)
             {
-                store.remove(claimId + "|" + dimension + "|" + canonicalTarget);
-            }
-            else
-            {
-                long expiresAt = safeExpiry(nowMillis.getAsLong(), duration);
-                TemporaryTrustRecord record = new TemporaryTrustRecord(
+                long expiresAt = duration == null ? 0L : safeExpiry(nowMillis.getAsLong(), duration);
+                intendedRecord = new TemporaryTrustRecord(
                         claimId, canonicalTarget, kind, dimension, baseline, expected,
                         expiresAt, store.nextRevision(), snapshot.ownerId());
-                store.put(record);
             }
-            mutations.add(new GrantMutation(claimId, canonicalTarget, dimension, expected));
+            String key = TemporaryTrustRecordKey.key(claimId, canonicalTarget, dimension);
+            store.beginTransition(new TrustTransition(key, precedingRecord, current,
+                    intendedRecord, expected));
+            mutations.add(new GrantMutation(claimId, canonicalTarget, dimension, expected, key));
         }
 
         store.save();
@@ -167,6 +161,7 @@ public final class CatCraftTrustService
                 withInternalMutation(() -> claimAccess.apply(mutation.claimId(), mutation.target(),
                         mutation.expectedState(), mutation.dimension()));
                 claimAccess.save(mutation.claimId());
+                store.completeTransition(mutation.key());
             }
         }
         catch (RuntimeException failure)
@@ -174,6 +169,7 @@ public final class CatCraftTrustService
             logger.severe("Could not apply CatCraft trust change: " + failure.getMessage());
             throw failure;
         }
+        store.save();
         scheduleNextExpiration();
     }
 
@@ -187,12 +183,28 @@ public final class CatCraftTrustService
         {
             if (claim == null || claim.getID() == null) continue;
             long claimId = claim.getID();
-            store.removeTargetAll(claimId, canonicalTarget);
             NativeTrustState permission = claimAccess.capture(claimId, canonicalTarget, TrustDimension.PERMISSION);
             NativeTrustState manager = claimAccess.capture(claimId, canonicalTarget, TrustDimension.MANAGER);
+            NativeTrustState intendedPermission = new NativeTrustState(null, permission.manager(), false);
+            NativeTrustState intendedManager = new NativeTrustState(manager.permission(), false, manager.safeBuild());
+            Optional<TemporaryTrustRecord> previousPermission =
+                    store.get(claimId, canonicalTarget, TrustDimension.PERMISSION);
+            Optional<TemporaryTrustRecord> previousManager =
+                    store.get(claimId, canonicalTarget, TrustDimension.MANAGER);
+            String permissionKey = TemporaryTrustRecordKey.key(
+                    claimId, canonicalTarget, TrustDimension.PERMISSION);
+            String managerKey = TemporaryTrustRecordKey.key(
+                    claimId, canonicalTarget, TrustDimension.MANAGER);
+            store.beginTransition(new TrustTransition(permissionKey,
+                    previousPermission.isPresent() && permission.equals(previousPermission.get().expectedState())
+                            ? previousPermission.get() : null,
+                    permission, null, intendedPermission));
+            store.beginTransition(new TrustTransition(managerKey,
+                    previousManager.isPresent() && manager.equals(previousManager.get().expectedState())
+                            ? previousManager.get() : null,
+                    manager, null, intendedManager));
             mutations.add(new RevokeMutation(claimId, canonicalTarget,
-                    new NativeTrustState(null, permission.manager(), false),
-                    new NativeTrustState(manager.permission(), false, manager.safeBuild())));
+                    permissionKey, managerKey, intendedPermission, intendedManager));
         }
         store.save();
         for (RevokeMutation mutation : mutations)
@@ -202,7 +214,10 @@ public final class CatCraftTrustService
                 claimAccess.apply(mutation.claimId(), mutation.target(), mutation.manager(), TrustDimension.MANAGER);
             });
             claimAccess.save(mutation.claimId());
+            store.completeTransition(mutation.permissionKey());
+            store.completeTransition(mutation.managerKey());
         }
+        store.save();
         scheduleNextExpiration();
     }
 
@@ -276,6 +291,7 @@ public final class CatCraftTrustService
             if (expire(record)) processed++;
             else break;
         }
+        if (processed > 0) persistBestEffort();
         Optional<TemporaryTrustRecord> next = store.nextExpiring();
         if (next.isPresent() && next.get().expiresAtMillis() <= now)
         {
@@ -293,20 +309,17 @@ public final class CatCraftTrustService
         if (snapshot == null || !Objects.equals(snapshot.ownerId(), record.ownerIdAtGrant()))
         {
             store.removeIfRevision(record.key(), record.revision());
-            persistBestEffort();
             return true;
         }
         NativeTrustState current = claimAccess.capture(record.claimId(), record.target(), record.dimension());
         if (current.equals(record.previousState()))
         {
             store.removeIfRevision(record.key(), record.revision());
-            persistBestEffort();
             return true;
         }
         if (!current.equals(record.expectedState()))
         {
             store.removeIfRevision(record.key(), record.revision());
-            persistBestEffort();
             return true;
         }
         try
@@ -315,7 +328,6 @@ public final class CatCraftTrustService
                     record.previousState(), record.dimension()));
             claimAccess.save(record.claimId());
             store.removeIfRevision(record.key(), record.revision());
-            persistBestEffort();
             return true;
         }
         catch (RuntimeException failure)
@@ -329,7 +341,35 @@ public final class CatCraftTrustService
     private void reconcileStartup() throws IOException
     {
         boolean changed = false;
-        long now = nowMillis.getAsLong();
+        for (TrustTransition transition : store.transitionValues())
+        {
+            ClaimSnapshot snapshot = claimAccess.resolve(claimIdFromKey(transition.key()));
+            UUID owner = transition.intendedRecord() != null
+                    ? transition.intendedRecord().ownerIdAtGrant()
+                    : transition.precedingRecord() == null
+                    ? null : transition.precedingRecord().ownerIdAtGrant();
+            if (snapshot == null || (owner != null && !Objects.equals(snapshot.ownerId(), owner)))
+            {
+                store.discardTransition(transition.key());
+                changed = true;
+                continue;
+            }
+            NativeTrustState current = claimAccess.capture(claimIdFromKey(transition.key()),
+                    targetFromKey(transition.key()), dimensionFromKey(transition.key()));
+            if (current.equals(transition.intendedState()))
+            {
+                store.completeTransition(transition.key());
+            }
+            else if (current.equals(transition.precedingState()))
+            {
+                store.abortTransition(transition.key());
+            }
+            else
+            {
+                store.discardTransition(transition.key());
+            }
+            changed = true;
+        }
         for (TemporaryTrustRecord record : store.values())
         {
             ClaimSnapshot snapshot = claimAccess.resolve(record.claimId());
@@ -346,10 +386,6 @@ public final class CatCraftTrustService
                 changed = true;
                 continue;
             }
-            if (record.expiresAtMillis() > 0 && record.expiresAtMillis() <= now && expire(record))
-            {
-                changed = true;
-            }
         }
         if (changed) store.save();
     }
@@ -362,14 +398,12 @@ public final class CatCraftTrustService
     {
         if (!visited.add(claimId)) return false;
         long now = nowMillis.getAsLong();
-        Optional<TemporaryTrustRecord> record = store.findSafeBuild(
-                claimId, playerId, player, now, snapshot.ownerId());
-        if (record.isPresent())
+        for (TemporaryTrustRecord record : store.safeBuildCandidates(
+                claimId, playerId, player, now, snapshot.ownerId()))
         {
-            NativeTrustState current = claimAccess.capture(claimId, record.get().target(), record.get().dimension());
-            if (current.equals(record.get().expectedState())) return true;
-            store.removeIfRevision(record.get().key(), record.get().revision());
-            persistBestEffort();
+            NativeTrustState current = claimAccess.capture(claimId, record.target(), record.dimension());
+            if (current.equals(record.expectedState())) return true;
+            store.removeIfRevision(record.key(), record.revision());
         }
         if (snapshot.restricted() || snapshot.parentId() == null) return false;
         ClaimSnapshot parent = claimAccess.resolve(snapshot.parentId());
@@ -381,17 +415,13 @@ public final class CatCraftTrustService
         ClaimSnapshot resolved = claimAccess.resolve(claim.getID());
         if (resolved != null) return resolved;
         return new ClaimSnapshot(claim.getID(), claim.getOwnerID(),
-                claim.parent == null ? null : claim.parent.getID(), false);
+                claim.parent == null ? null : claim.parent.getID(), claim.getSubclaimRestrictions());
     }
 
     private void scheduleNextExpiration()
     {
         if (!loaded) return;
-        if (expirationHandle != null)
-        {
-            expirationHandle.cancel();
-            expirationHandle = null;
-        }
+        cancelScheduledExpiration();
         Optional<TemporaryTrustRecord> next = store.nextExpiring();
         if (next.isEmpty()) return;
         long delayMillis = next.get().expiresAtMillis() - nowMillis.getAsLong();
@@ -406,12 +436,39 @@ public final class CatCraftTrustService
 
     private void scheduleNextTick()
     {
-        if (nextTickScheduled) return;
-        nextTickScheduled = true;
+        cancelScheduledExpiration();
+        CancellableCallback callback = new CancellableCallback();
+        expirationHandle = callback;
         scheduler.nextTick(() -> {
-            nextTickScheduled = false;
+            if (callback.cancelled || expirationHandle != callback) return;
+            expirationHandle = null;
             processDue(nowMillis.getAsLong());
         });
+    }
+
+    private void cancelScheduledExpiration()
+    {
+        if (expirationHandle != null) expirationHandle.cancel();
+        expirationHandle = null;
+    }
+
+    private static long claimIdFromKey(String key)
+    {
+        return Long.parseLong(key.substring(0, key.indexOf('|')));
+    }
+
+    private static String targetFromKey(String key)
+    {
+        int first = key.indexOf('|');
+        int second = key.indexOf('|', first + 1);
+        return key.substring(second + 1);
+    }
+
+    private static TrustDimension dimensionFromKey(String key)
+    {
+        int first = key.indexOf('|');
+        int second = key.indexOf('|', first + 1);
+        return TrustDimension.valueOf(key.substring(first + 1, second));
     }
 
     private void persistBestEffort()
@@ -487,13 +544,25 @@ public final class CatCraftTrustService
     }
 
     private record GrantMutation(long claimId, String target, TrustDimension dimension,
-                                 NativeTrustState expectedState)
+                                 NativeTrustState expectedState, String key)
     {
     }
 
-    private record RevokeMutation(long claimId, String target, NativeTrustState permission,
+    private record RevokeMutation(long claimId, String target, String permissionKey,
+                                  String managerKey, NativeTrustState permission,
                                   NativeTrustState manager)
     {
+    }
+
+    private static final class CancellableCallback implements ScheduledHandle
+    {
+        private boolean cancelled;
+
+        @Override
+        public void cancel()
+        {
+            cancelled = true;
+        }
     }
 }
 
@@ -522,4 +591,16 @@ interface TrustTaskScheduler
 interface ScheduledHandle
 {
     void cancel();
+}
+
+final class TemporaryTrustRecordKey
+{
+    private TemporaryTrustRecordKey()
+    {
+    }
+
+    static String key(long claimId, String target, TrustDimension dimension)
+    {
+        return claimId + "|" + dimension + "|" + target.toLowerCase(Locale.ROOT);
+    }
 }

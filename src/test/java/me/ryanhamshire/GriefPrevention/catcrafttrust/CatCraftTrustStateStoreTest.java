@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -122,6 +123,56 @@ class CatCraftTrustStateStoreTest
 
         assertTrue(Files.isRegularFile(file));
         assertFalse(Files.exists(file.resolveSibling("temporary-trust.properties.tmp")));
+    }
+
+    @Test
+    void expirationQueueRemainsBoundedAcrossReplacementAndRemoval()
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("state"), 1);
+        for (int revision = 1; revision <= 20; revision++)
+        {
+            store.put(record(42L, "target", revision, revision));
+            assertEquals(1, store.expirationQueueSize());
+        }
+
+        store.removeClaim(42L);
+        assertEquals(0, store.expirationQueueSize());
+    }
+
+    @Test
+    void backupRecoveryDoesNotCopyCorruptPrimaryOverValidBackup() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(record(42L, "first", 0L, 1L));
+        store.save();
+        store.put(record(42L, "second", 0L, 2L));
+        store.save();
+
+        Files.writeString(file, "corrupt primary");
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+        recovered.put(record(42L, "third", 0L, 3L));
+        recovered.save();
+        Files.writeString(file, "corrupt again");
+
+        CatCraftTrustStateStore afterSecondFailure = new CatCraftTrustStateStore(file, 10);
+        afterSecondFailure.load();
+        assertEquals(List.of(record(42L, "first", 0L, 1L)),
+                afterSecondFailure.forClaim(42L));
+    }
+
+    @Test
+    void rejectsUnknownKeysAndOversizedFilesBeforeLoadingProperties() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        Files.writeString(file, "version=2\ncount=0\nunknown=1\n");
+        assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 1).load());
+
+        String oversized = "version=2\ncount=0\nrecord.0="
+                + "x".repeat(2_000_000) + "\n";
+        Files.writeString(file, oversized, StandardCharsets.UTF_8);
+        assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 1).load());
     }
 
     private static TemporaryTrustRecord record(long claimId, String target, long expiresAtMillis, long revision)

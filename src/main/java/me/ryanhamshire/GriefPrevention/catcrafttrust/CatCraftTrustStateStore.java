@@ -5,9 +5,9 @@ import org.jetbrains.annotations.Nullable;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.io.Reader;
+import java.io.StringReader;
 import java.io.Writer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
@@ -18,7 +18,6 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -29,6 +28,8 @@ import java.util.Optional;
 import java.util.PriorityQueue;
 import java.util.Properties;
 import java.util.UUID;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import me.ryanhamshire.GriefPrevention.ClaimPermission;
 
@@ -41,6 +42,10 @@ public final class CatCraftTrustStateStore
 {
     private static final String VERSION = "2";
     private static final int FIELD_COUNT = 13;
+    private static final int MAX_RECORD_VALUE_LENGTH = 2_048;
+    private static final int MAX_TRANSITION_VALUE_LENGTH = 8_192;
+    private static final Pattern RECORD_KEY = Pattern.compile("record\\.(\\d+)");
+    private static final Pattern TRANSITION_KEY = Pattern.compile("transition\\.(\\d+)");
 
     private final Path file;
     private final int maximumRecords;
@@ -48,6 +53,8 @@ public final class CatCraftTrustStateStore
     private final Map<Long, Map<String, TemporaryTrustRecord>> byClaim = new LinkedHashMap<>();
     private final PriorityQueue<ExpiryKey> expirationQueue = new PriorityQueue<>(
             Comparator.comparingLong(ExpiryKey::expiresAt).thenComparingLong(ExpiryKey::revision));
+    private final Map<String, ExpiryKey> expirationEntries = new LinkedHashMap<>();
+    private final Map<String, TrustTransition> transitions = new LinkedHashMap<>();
     private long nextRevision = 1L;
 
     public CatCraftTrustStateStore(Path file, int maximumRecords)
@@ -93,15 +100,20 @@ public final class CatCraftTrustStateStore
         records.clear();
         byClaim.clear();
         expirationQueue.clear();
+        expirationEntries.clear();
+        transitions.clear();
         records.putAll(parsed.records());
         for (TemporaryTrustRecord record : parsed.records().values())
         {
             indexClaim(record);
             if (record.expiresAtMillis() > 0)
             {
-                expirationQueue.add(new ExpiryKey(record.key(), record.revision(), record.expiresAtMillis()));
+                ExpiryKey expiry = new ExpiryKey(record.key(), record.revision(), record.expiresAtMillis());
+                expirationEntries.put(record.key(), expiry);
+                expirationQueue.add(expiry);
             }
         }
+        transitions.putAll(parsed.transitions());
         nextRevision = parsed.nextRevision();
     }
 
@@ -124,6 +136,12 @@ public final class CatCraftTrustStateStore
             {
                 properties.setProperty("record." + index, encode(snapshot.get(index)));
             }
+            properties.setProperty("transition.count", Integer.toString(transitions.size()));
+            int transitionIndex = 0;
+            for (TrustTransition transition : transitions.values())
+            {
+                properties.setProperty("transition." + transitionIndex++, encodeTransition(transition));
+            }
 
             try (OutputStream output = Files.newOutputStream(temporary,
                     StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
@@ -136,7 +154,7 @@ public final class CatCraftTrustStateStore
             {
                 channel.force(true);
             }
-            if (Files.isRegularFile(absolute))
+            if (Files.isRegularFile(absolute) && isValidPrimary(absolute))
             {
                 Files.copy(absolute, backup, StandardCopyOption.REPLACE_EXISTING);
             }
@@ -177,20 +195,79 @@ public final class CatCraftTrustStateStore
         return List.copyOf(records.values());
     }
 
+    synchronized List<TrustTransition> transitionValues()
+    {
+        return List.copyOf(transitions.values());
+    }
+
+    synchronized void beginTransition(TrustTransition transition)
+    {
+        Objects.requireNonNull(transition, "transition");
+        if (transition.intendedRecord() != null
+                && !records.containsKey(transition.key())
+                && records.size() >= maximumRecords)
+        {
+            throw new IllegalStateException("CatCraft temporary trust record limit reached");
+        }
+        transitions.put(transition.key(), transition);
+    }
+
+    synchronized void completeTransition(String key)
+    {
+        TrustTransition transition = transitions.remove(key);
+        if (transition == null) return;
+        if (transition.intendedRecord() == null)
+        {
+            removeInternal(key);
+        }
+        else
+        {
+            putInternal(transition.intendedRecord());
+            advanceRevision(transition.intendedRecord().revision());
+        }
+    }
+
+    synchronized void abortTransition(String key)
+    {
+        TrustTransition transition = transitions.remove(key);
+        if (transition == null) return;
+        if (transition.precedingRecord() == null) removeInternal(key);
+        else putInternal(transition.precedingRecord());
+    }
+
+    synchronized void discardTransition(String key)
+    {
+        transitions.remove(key);
+        removeInternal(key);
+    }
+
     public synchronized Optional<TemporaryTrustRecord> findSafeBuild(long claimId,
                                                                        @Nullable UUID checked,
                                                                        @Nullable Player player,
                                                                        long now,
                                                                        @Nullable UUID ownerId)
     {
+        return safeBuildCandidates(claimId, checked, player, now, ownerId).stream().findFirst();
+    }
+
+    public synchronized List<TemporaryTrustRecord> safeBuildCandidates(long claimId,
+                                                                          @Nullable UUID checked,
+                                                                          @Nullable Player player,
+                                                                          long now,
+                                                                          @Nullable UUID ownerId)
+    {
         Map<String, TemporaryTrustRecord> rows = byClaim.get(claimId);
-        if (rows == null) return Optional.empty();
+        if (rows == null) return List.of();
+        List<TemporaryTrustRecord> candidates = new ArrayList<>();
         for (TemporaryTrustRecord record : rows.values())
         {
-            if (!isLiveSafeBuild(record, now, ownerId)) continue;
-            if (targetMatches(record.target(), checked, player)) return Optional.of(record);
+            if (isLiveSafeBuild(record, now, ownerId)
+                    && targetMatches(record.target(), checked, player))
+            {
+                candidates.add(record);
+            }
         }
-        return Optional.empty();
+        return List.copyOf(candidates);
     }
 
     public synchronized Optional<TemporaryTrustRecord> findAnySafeBuild(long claimId,
@@ -254,12 +331,23 @@ public final class CatCraftTrustStateStore
 
     public synchronized int removeClaim(long claimId)
     {
-        Map<String, TemporaryTrustRecord> rows = byClaim.remove(claimId);
-        if (rows == null) return 0;
+        Map<String, TemporaryTrustRecord> rows = byClaim.get(claimId);
         int removed = 0;
-        for (String key : rows.keySet())
+        if (rows != null)
         {
-            if (records.remove(key) != null) removed++;
+            for (String key : List.copyOf(rows.keySet()))
+            {
+                if (removeInternal(key) != null) removed++;
+            }
+        }
+        String prefix = claimId + "|";
+        for (String key : List.copyOf(transitions.keySet()))
+        {
+            if (key.startsWith(prefix))
+            {
+                transitions.remove(key);
+                removed++;
+            }
         }
         return removed;
     }
@@ -282,6 +370,11 @@ public final class CatCraftTrustStateStore
     public synchronized int size()
     {
         return records.size();
+    }
+
+    synchronized int expirationQueueSize()
+    {
+        return expirationEntries.size();
     }
 
     static String key(long claimId, String target, TrustDimension dimension)
@@ -310,7 +403,9 @@ public final class CatCraftTrustStateStore
 
     private void putInternal(TemporaryTrustRecord record)
     {
-        TemporaryTrustRecord previous = records.put(record.key(), record);
+        TemporaryTrustRecord previous = records.get(record.key());
+        if (previous != null) removeExpiry(previous.key());
+        records.put(record.key(), record);
         if (previous != null)
         {
             Map<String, TemporaryTrustRecord> oldRows = byClaim.get(previous.claimId());
@@ -323,7 +418,9 @@ public final class CatCraftTrustStateStore
         indexClaim(record);
         if (record.expiresAtMillis() > 0)
         {
-            expirationQueue.add(new ExpiryKey(record.key(), record.revision(), record.expiresAtMillis()));
+            ExpiryKey expiry = new ExpiryKey(record.key(), record.revision(), record.expiresAtMillis());
+            expirationEntries.put(record.key(), expiry);
+            expirationQueue.add(expiry);
         }
     }
 
@@ -334,6 +431,7 @@ public final class CatCraftTrustStateStore
 
     private TemporaryTrustRecord removeInternal(String key)
     {
+        removeExpiry(key);
         TemporaryTrustRecord removed = records.remove(key);
         if (removed == null) return null;
         Map<String, TemporaryTrustRecord> rows = byClaim.get(removed.claimId());
@@ -343,6 +441,12 @@ public final class CatCraftTrustStateStore
             if (rows.isEmpty()) byClaim.remove(removed.claimId());
         }
         return removed;
+    }
+
+    private void removeExpiry(String key)
+    {
+        ExpiryKey expiry = expirationEntries.remove(key);
+        if (expiry != null) expirationQueue.remove(expiry);
     }
 
     private void advanceRevision(long revision)
@@ -358,15 +462,33 @@ public final class CatCraftTrustStateStore
         records.clear();
         byClaim.clear();
         expirationQueue.clear();
+        expirationEntries.clear();
+        transitions.clear();
         nextRevision = 1L;
     }
 
     private ParsedState parseFile(Path source) throws IOException
     {
+        byte[] raw = Files.readAllBytes(source);
+        if (raw.length > maximumFileBytes())
+        {
+            throw new IOException("CatCraft trust state file exceeds configured bound");
+        }
         Properties properties = new Properties();
-        try (Reader reader = new InputStreamReader(Files.newInputStream(source), StandardCharsets.UTF_8))
+        String text = new String(raw, StandardCharsets.UTF_8);
+        try (Reader reader = new StringReader(text))
         {
             properties.load(reader);
+        }
+        for (String propertyName : properties.stringPropertyNames())
+        {
+            String value = properties.getProperty(propertyName);
+            int maxValueLength = propertyName.startsWith("record.")
+                    ? MAX_RECORD_VALUE_LENGTH : MAX_TRANSITION_VALUE_LENGTH;
+            if (value.length() > maxValueLength || !isAllowedProperty(propertyName))
+            {
+                throw new IOException("Invalid CatCraft trust state property");
+            }
         }
         if (!VERSION.equals(properties.getProperty("version")))
         {
@@ -386,7 +508,36 @@ public final class CatCraftTrustStateStore
             throw new IOException("CatCraft trust record count exceeds configured bound");
         }
 
+        int transitionCount;
+        try
+        {
+            transitionCount = Integer.parseInt(properties.getProperty("transition.count", "0"));
+        }
+        catch (NumberFormatException ex)
+        {
+            throw new IOException("Invalid CatCraft trust transition count", ex);
+        }
+        if (transitionCount < 0 || transitionCount > maximumRecords)
+        {
+            throw new IOException("CatCraft trust transition count exceeds configured bound");
+        }
+        for (String propertyName : properties.stringPropertyNames())
+        {
+            Matcher recordMatcher = RECORD_KEY.matcher(propertyName);
+            if (recordMatcher.matches() && indexedValue(recordMatcher.group(1), count))
+            {
+                throw new IOException("Unexpected CatCraft trust record key");
+            }
+            Matcher transitionMatcher = TRANSITION_KEY.matcher(propertyName);
+            if (transitionMatcher.matches()
+                    && indexedValue(transitionMatcher.group(1), transitionCount))
+            {
+                throw new IOException("Unexpected CatCraft trust transition key");
+            }
+        }
+
         Map<String, TemporaryTrustRecord> parsed = new LinkedHashMap<>();
+        Map<String, TrustTransition> parsedTransitions = new LinkedHashMap<>();
         long parsedNextRevision = 1L;
         for (int index = 0; index < count; index++)
         {
@@ -411,7 +562,77 @@ public final class CatCraftTrustStateStore
                 throw new IOException("Invalid CatCraft trust record " + index, ex);
             }
         }
-        return new ParsedState(parsed, parsedNextRevision);
+        for (int index = 0; index < transitionCount; index++)
+        {
+            String value = properties.getProperty("transition." + index);
+            if (value == null) throw new IOException("Missing CatCraft trust transition " + index);
+            try
+            {
+                TrustTransition transition = decodeTransition(value);
+                if (parsedTransitions.put(transition.key(), transition) != null)
+                {
+                    throw new IOException("Duplicate CatCraft trust transition " + index);
+                }
+            }
+            catch (IOException ex)
+            {
+                throw ex;
+            }
+            catch (RuntimeException ex)
+            {
+                throw new IOException("Invalid CatCraft trust transition " + index, ex);
+            }
+        }
+        return new ParsedState(parsed, parsedTransitions, parsedNextRevision);
+    }
+
+    private boolean isValidPrimary(Path source)
+    {
+        try
+        {
+            parseFile(source);
+            return true;
+        }
+        catch (IOException ignored)
+        {
+            return false;
+        }
+    }
+
+    private long maximumFileBytes()
+    {
+        long perRecord = MAX_RECORD_VALUE_LENGTH + 64L;
+        long perTransition = MAX_TRANSITION_VALUE_LENGTH + 64L;
+        try
+        {
+            return Math.addExact(4096L,
+                    Math.multiplyExact(maximumRecords, perRecord + perTransition));
+        }
+        catch (ArithmeticException ex)
+        {
+            return Long.MAX_VALUE;
+        }
+    }
+
+    private static boolean isAllowedProperty(String propertyName)
+    {
+        return "version".equals(propertyName)
+                || "count".equals(propertyName)
+                || "transition.count".equals(propertyName)
+                || RECORD_KEY.matcher(propertyName).matches()
+                || TRANSITION_KEY.matcher(propertyName).matches();
+    }
+
+    private static boolean indexedValue(String value, int count) throws IOException
+    {
+        try
+        {
+            return Long.parseLong(value) >= count;
+        }
+        catch (NumberFormatException ex)
+        {
+            throw new IOException("Invalid CatCraft trust property index", ex);
+        }
     }
 
     private static String encode(TemporaryTrustRecord record)
@@ -432,6 +653,54 @@ public final class CatCraftTrustStateStore
                 Long.toString(record.expiresAtMillis()),
                 Long.toString(record.revision()),
                 record.ownerIdAtGrant() == null ? "-" : encodeText(record.ownerIdAtGrant().toString()));
+    }
+
+    private static String encodeTransition(TrustTransition transition)
+    {
+        String value = String.join("|",
+                encodeText(transition.key()),
+                encodeNullableRecord(transition.precedingRecord()),
+                encodeState(transition.precedingState()),
+                encodeNullableRecord(transition.intendedRecord()),
+                encodeState(transition.intendedState()));
+        return encodeText(value);
+    }
+
+    private static TrustTransition decodeTransition(String value)
+    {
+        String decoded = decodeText(value);
+        String[] fields = decoded.split("\\|", -1);
+        if (fields.length != 5) throw new IllegalArgumentException("invalid transition field count");
+        String key = decodeText(fields[0]);
+        TemporaryTrustRecord preceding = decodeNullableRecord(fields[1]);
+        NativeTrustState precedingState = decodeState(fields[2]);
+        TemporaryTrustRecord intended = decodeNullableRecord(fields[3]);
+        NativeTrustState intendedState = decodeState(fields[4]);
+        return new TrustTransition(key, preceding, precedingState, intended, intendedState);
+    }
+
+    private static String encodeNullableRecord(@Nullable TemporaryTrustRecord record)
+    {
+        return record == null ? "-" : encodeText(encode(record));
+    }
+
+    private static @Nullable TemporaryTrustRecord decodeNullableRecord(String value)
+    {
+        return "-".equals(value) ? null : decode(decodeText(value));
+    }
+
+    private static String encodeState(NativeTrustState state)
+    {
+        return String.join(",", permissionName(state.permission()),
+                Boolean.toString(state.manager()), Boolean.toString(state.safeBuild()));
+    }
+
+    private static NativeTrustState decodeState(String value)
+    {
+        String[] fields = value.split(",", -1);
+        if (fields.length != 3) throw new IllegalArgumentException("invalid state field count");
+        return new NativeTrustState(parsePermission(fields[0]), parseBoolean(fields[1]),
+                parseBoolean(fields[2]));
     }
 
     private static TemporaryTrustRecord decode(String value)
@@ -496,7 +765,31 @@ public final class CatCraftTrustStateStore
     {
     }
 
-    private record ParsedState(Map<String, TemporaryTrustRecord> records, long nextRevision)
+    private record ParsedState(Map<String, TemporaryTrustRecord> records,
+                               Map<String, TrustTransition> transitions,
+                               long nextRevision)
     {
+    }
+}
+
+record TrustTransition(String key,
+                       @Nullable TemporaryTrustRecord precedingRecord,
+                       NativeTrustState precedingState,
+                       @Nullable TemporaryTrustRecord intendedRecord,
+                       NativeTrustState intendedState)
+{
+    TrustTransition
+    {
+        Objects.requireNonNull(key, "key");
+        Objects.requireNonNull(precedingState, "precedingState");
+        Objects.requireNonNull(intendedState, "intendedState");
+        if (precedingRecord != null && !key.equals(precedingRecord.key()))
+        {
+            throw new IllegalArgumentException("preceding record key mismatch");
+        }
+        if (intendedRecord != null && !key.equals(intendedRecord.key()))
+        {
+            throw new IllegalArgumentException("intended record key mismatch");
+        }
     }
 }
