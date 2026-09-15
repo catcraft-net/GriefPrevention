@@ -22,6 +22,7 @@ import com.google.common.io.FileWriteMode;
 import com.google.common.io.Files;
 import com.griefprevention.visualization.BoundaryVisualization;
 import com.griefprevention.visualization.VisualizationType;
+import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustService;
 import me.ryanhamshire.GriefPrevention.events.ClaimCreatedEvent;
 import me.ryanhamshire.GriefPrevention.events.ClaimDeletedEvent;
 import me.ryanhamshire.GriefPrevention.events.ClaimExtendEvent;
@@ -57,6 +58,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -406,6 +408,22 @@ public abstract class DataStore
         //return if event is cancelled
         if (event.isCancelled()) return;
 
+        CatCraftTrustService catCraftTrust = GriefPrevention.instance == null
+                ? null : GriefPrevention.instance.catCraftTrustService;
+        if (catCraftTrust != null && catCraftTrust.isStarted())
+        {
+            try
+            {
+                catCraftTrust.prepareClaimTransfer(claim);
+            }
+            catch (IOException | RuntimeException failure)
+            {
+                GriefPrevention.instance.getLogger().log(Level.SEVERE,
+                        "Claim transfer stopped because CatCraft temporary trust could not be secured.", failure);
+                throw new NoTransferException("Claim transfer stopped because temporary trust could not be secured.");
+            }
+        }
+
         //determine new owner
         PlayerData newOwnerData = null;
 
@@ -635,10 +653,17 @@ public abstract class DataStore
 
     synchronized void deleteClaim(Claim claim, boolean fireEvent, boolean ignored)
     {
-        //delete any children
-        for (int j = 1; (j - 1) < claim.children.size(); j++)
+        CatCraftTrustService catCraftTrust = GriefPrevention.instance == null
+                ? null : GriefPrevention.instance.catCraftTrustService;
+        if (catCraftTrust != null && catCraftTrust.isStarted() && claim.id != null)
         {
-            this.deleteClaim(claim.children.get(j - 1), fireEvent, ignored);
+            catCraftTrust.onClaimDeleted(claim.id);
+        }
+
+        //delete any children
+        for (Claim child : new ArrayList<>(claim.children))
+        {
+            this.deleteClaim(child, fireEvent, ignored);
         }
 
         //subdivisions must also be removed from the parent claim child list

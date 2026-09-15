@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     name: "Test on JDK ${{ matrix.java }}"
@@ -14,11 +17,35 @@ jobs:
     steps:
       - name: "Checkout"
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: "Set up JDK ${{ matrix.java }}"
         uses: actions/setup-java@v4
         with:
           java-version: ${{ matrix.java }}
           distribution: temurin
           cache: maven
-      - name: "Test"
-        run: mvn --batch-mode verify
+      - name: "Clean verification"
+        run: mvn --batch-mode clean verify
+      - name: "Package verification inputs"
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p verification
+          git archive --format=tar.gz HEAD > verification/source.tar.gz
+          git rev-parse HEAD > verification/commit.txt
+          if [ -d "$HOME/.m2/repository" ]; then
+            tar -czf verification/maven-repository.tar.gz -C "$HOME/.m2" repository
+          fi
+          MAVEN_ROOT="$(dirname "$(dirname "$(readlink -f "$(command -v mvn)")")")"
+          tar -czf verification/maven-tool.tar.gz -C "$MAVEN_ROOT" bin boot lib conf
+      - name: "Upload verification evidence"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-verification-${{ github.sha }}
+          retention-days: 3
+          path: |
+            verification/
+            target/GriefPrevention.jar
+            target/surefire-reports/
