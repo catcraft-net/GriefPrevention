@@ -75,7 +75,12 @@ public final class CatCraftTrustRuntime
             @Override
             public boolean isSafeBuilder(Claim claim, UUID playerId, Player player)
             {
-                return service.isSafeBuilder(claim, playerId, player);
+                // A marker is not a denial: ownership, bypass and stronger native
+                // inventory permission still take precedence for manual actions.
+                return service.isSafeBuilder(claim, playerId, player)
+                        && (player == null
+                        ? claim.checkPermission(playerId, ClaimPermission.Inventory, null) != null
+                        : claim.checkPermission(player, ClaimPermission.Inventory, null) != null);
             }
 
             @Override
@@ -200,7 +205,7 @@ public final class CatCraftTrustRuntime
             String canonical = target.toLowerCase(Locale.ROOT);
             if (dimension == TrustDimension.PERMISSION)
             {
-                claim.setPermission(canonical, state.permission());
+                claim.setLocalPermission(canonical, state.permission());
             }
             else if (state.manager())
             {

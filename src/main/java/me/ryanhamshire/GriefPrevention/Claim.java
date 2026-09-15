@@ -631,6 +631,31 @@ public class Claim
         }
     }
 
+    /**
+     * Changes only this claim's ordinary permission dimension. Unlike
+     * setPermission(target, null), a null value does not untrust the target's
+     * manager dimension or touch subdivisions. Used for journaled restoration.
+     */
+    public void setLocalPermission(@NotNull String target, @Nullable ClaimPermission permission)
+    {
+        Objects.requireNonNull(target, "target");
+        if (target.isEmpty()) throw new IllegalArgumentException("empty trust target");
+        if (permission == ClaimPermission.Edit || permission == ClaimPermission.Manage)
+            throw new IllegalArgumentException("not an ordinary claim permission");
+        if (!invalidateCatCraftPermission(target, TrustDimension.PERMISSION))
+            throw new IllegalStateException("CatCraft trust invalidation could not be persisted");
+        try
+        {
+            String canonical = target.toLowerCase(java.util.Locale.ROOT);
+            if (permission == null) this.playerIDToClaimPermissionMap.remove(canonical);
+            else this.playerIDToClaimPermissionMap.put(canonical, permission);
+        }
+        finally
+        {
+            completeCatCraftPermission(target, TrustDimension.PERMISSION);
+        }
+    }
+
     //revokes a permission for a player or the public
     public void dropPermission(@NotNull String playerID)
     {
