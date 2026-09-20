@@ -162,6 +162,10 @@ public final class CatCraftTrustStateStore
             if (Files.isRegularFile(absolute) && isValidPrimary(absolute))
             {
                 Files.copy(absolute, backup, StandardCopyOption.REPLACE_EXISTING);
+                try (FileChannel channel = FileChannel.open(backup, StandardOpenOption.WRITE))
+                {
+                    channel.force(true);
+                }
             }
             try
             {

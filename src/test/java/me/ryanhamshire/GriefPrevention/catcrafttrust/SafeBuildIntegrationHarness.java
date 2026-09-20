@@ -19,6 +19,11 @@ public final class SafeBuildIntegrationHarness
 
     public static CatCraftTrustService start(Path directory, Claim... claims) throws Exception
     {
+        return start(directory, System::currentTimeMillis, claims);
+    }
+
+    public static CatCraftTrustService start(Path directory, java.util.function.LongSupplier now, Claim... claims) throws Exception
+    {
         Map<Long, Claim> claimsById = new HashMap<>();
         for (Claim claim : claims)
         {
@@ -26,8 +31,8 @@ public final class SafeBuildIntegrationHarness
         }
         ClaimAccess access = new ClaimAccess(claimsById);
         CatCraftTrustService service = new CatCraftTrustService(
-                directory.resolve("safe-build-" + UUID.randomUUID() + ".properties"),
-                100, access, new NoOpScheduler(), 10);
+                new CatCraftTrustStateStore(directory.resolve("safe-build-" + UUID.randomUUID() + ".properties"),
+                100), access, new NoOpScheduler(), now, 10);
         service.start();
         return service;
     }

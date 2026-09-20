@@ -317,13 +317,22 @@ public class Claim
 
     }
 
+    private boolean isCatCraftTrustBlocked(String target, TrustDimension dimension)
+    {
+        GriefPrevention plugin = GriefPrevention.instance;
+        CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
+        return service != null && service.isNativeTrustBlocked(this, target, dimension);
+    }
+
     public boolean hasExplicitPermission(@NotNull UUID uuid, @NotNull ClaimPermission level)
     {
         if (uuid.equals(this.getOwnerID())) return true;
 
-        if (level == ClaimPermission.Manage) return this.managers.contains(uuid.toString());
+        if (level == ClaimPermission.Manage) return this.managers.contains(uuid.toString())
+                && !isCatCraftTrustBlocked(uuid.toString(), TrustDimension.MANAGER);
 
-        return level.isGrantedBy(this.playerIDToClaimPermissionMap.get(uuid.toString()));
+        return !isCatCraftTrustBlocked(uuid.toString(), TrustDimension.PERMISSION)
+                && level.isGrantedBy(this.playerIDToClaimPermissionMap.get(uuid.toString()));
     }
 
     public boolean hasExplicitPermission(@NotNull Player player, @NotNull ClaimPermission level)
@@ -339,7 +348,8 @@ public class Claim
                 // Ensure valid permission format for permissions - [permission.node]
                 if (node.length() < 3 || node.charAt(0) != '[' || node.charAt(node.length() - 1) != ']') continue;
                 // Check if player has node
-                if (player.hasPermission(node.substring(1, node.length() - 1))) return true;
+                if (!isCatCraftTrustBlocked(node, TrustDimension.MANAGER)
+                        && player.hasPermission(node.substring(1, node.length() - 1))) return true;
             }
             return false;
         }
@@ -352,7 +362,8 @@ public class Claim
             if (node.length() < 3 || node.charAt(0) != '[' || node.charAt(node.length() - 1) != ']') continue;
 
             // Check if level is high enough and player has node
-            if (level.isGrantedBy(stringToPermission.getValue())
+            if (!isCatCraftTrustBlocked(node, TrustDimension.PERMISSION)
+                    && level.isGrantedBy(stringToPermission.getValue())
                     && player.hasPermission(node.substring(1, node.length() - 1)))
                 return true;
         }
@@ -488,7 +499,8 @@ public class Claim
         }
 
         // Check for public permission.
-        if (permission.isGrantedBy(this.playerIDToClaimPermissionMap.get("public"))) return null;
+        if (!isCatCraftTrustBlocked("public", TrustDimension.PERMISSION)
+                && permission.isGrantedBy(this.playerIDToClaimPermissionMap.get("public"))) return null;
 
         // Special building-only rules.
         if (permission == ClaimPermission.Build)
@@ -727,7 +739,8 @@ public class Claim
         if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        if (service == null || service.isInternalMutation()) return true;
+        if (!service.isStarted()) return false;
         return service.onExternalPermissionMutation(this, playerID, dimension);
     }
 
@@ -745,7 +758,8 @@ public class Claim
         if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        if (service == null || service.isInternalMutation()) return true;
+        if (!service.isStarted()) return false;
         return service.onExternalTargetMutation(this, playerID);
     }
 
@@ -763,7 +777,8 @@ public class Claim
         if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        if (service == null || service.isInternalMutation()) return true;
+        if (!service.isStarted()) return false;
         return service.onExternalTargetRemoved(this, playerID);
     }
 
@@ -772,7 +787,8 @@ public class Claim
         if (!this.inDataStore || this.id == null) return true;
         GriefPrevention plugin = GriefPrevention.instance;
         CatCraftTrustService service = plugin == null ? null : plugin.catCraftTrustService;
-        if (service == null || !service.isStarted() || service.isInternalMutation()) return true;
+        if (service == null || service.isInternalMutation()) return true;
+        if (!service.isStarted()) return false;
         return service.onExternalPermissionsCleared(this);
     }
 

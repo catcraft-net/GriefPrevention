@@ -498,7 +498,7 @@ public class DatabaseDataStore extends DataStore
     }
 
     @Override
-    PlayerData getPlayerDataFromStorage(UUID playerID)
+    synchronized PlayerData getPlayerDataFromStorage(UUID playerID)
     {
         PlayerData playerData = new PlayerData();
         playerData.playerID = playerID;
@@ -527,7 +527,7 @@ public class DatabaseDataStore extends DataStore
 
     //saves changes to player data.  MUST be called after you're done making changes, otherwise a reload will lose them
     @Override
-    public void overrideSavePlayerData(UUID playerID, PlayerData playerData)
+    public synchronized void overrideSavePlayerData(UUID playerID, PlayerData playerData)
     {
         //never save data for the "administrative" account.  an empty string for player name indicates administrative account
         if (playerID == null) return;

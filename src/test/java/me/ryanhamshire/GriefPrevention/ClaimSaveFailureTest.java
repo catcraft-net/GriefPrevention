@@ -21,6 +21,42 @@ class ClaimSaveFailureTest
     }
 
     @Test
+    void asyncPlayerSaveCannotJoinAnInFlightClaimTransaction() throws Exception
+    {
+        DatabaseDataStore store = mock(DatabaseDataStore.class, CALLS_REAL_METHODS);
+        Connection connection = mock(Connection.class);
+        var field = DatabaseDataStore.class.getDeclaredField("databaseConnection");
+        field.setAccessible(true);
+        field.set(store, connection);
+        var entered = new java.util.concurrent.CountDownLatch(1);
+        var started = new java.util.concurrent.CountDownLatch(1);
+        when(connection.prepareStatement(anyString())).thenAnswer(invocation -> {
+            entered.countDown();
+            throw new SQLException("test ends at the connection boundary");
+        });
+        try (var executor = java.util.concurrent.Executors.newSingleThreadExecutor())
+        {
+            java.util.concurrent.Future<?> save;
+            boolean touchedTransaction;
+            synchronized (store)
+            {
+                save = executor.submit(() -> {
+                    try (MockedStatic<GriefPrevention> ignored = mockStatic(GriefPrevention.class))
+                    {
+                        started.countDown();
+                        store.overrideSavePlayerData(java.util.UUID.randomUUID(), new PlayerData());
+                    }
+                });
+                assertTrue(started.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                touchedTransaction = entered.await(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
+            save.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertFalse(touchedTransaction, "player save entered the shared claim transaction");
+            assertEquals(0L, entered.getCount());
+        }
+    }
+
+    @Test
     void flatFileSaveReportsFailureInsteadOfAcknowledgingTrustRestoration() throws Exception
     {
         FlatFileDataStore store = mock(FlatFileDataStore.class, CALLS_REAL_METHODS);

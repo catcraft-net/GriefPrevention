@@ -67,6 +67,48 @@ class SafeBuildPermissionIntegrationTest
     }
 
     @Test
+    void expiryDeniesNativeUuidPublicGroupAndManagerGrantsBeforeWorkerRuns() throws Exception
+    {
+        java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1000L);
+        Claim individual = claim(51L, OWNER);
+        Claim publicClaim = claim(52L, OWNER);
+        Claim group = claim(53L, OWNER);
+        CatCraftTrustService real = SafeBuildIntegrationHarness.start(directory, now::get, individual, publicClaim, group);
+        plugin.catCraftTrustService = real;
+        real.grant(List.of(individual), BUILDER.toString(), CatCraftTrustKind.FULL, java.time.Duration.ofSeconds(1));
+        real.grant(List.of(individual), BUILDER.toString(), CatCraftTrustKind.MANAGE, java.time.Duration.ofSeconds(1));
+        real.grant(List.of(publicClaim), "public", CatCraftTrustKind.CONTAINER, java.time.Duration.ofSeconds(1));
+        real.grant(List.of(group), "[test.group]", CatCraftTrustKind.CONTAINER, java.time.Duration.ofSeconds(1));
+        real.grant(List.of(group), "[test.group]", CatCraftTrustKind.MANAGE, java.time.Duration.ofSeconds(1));
+        Player player = mock(Player.class);
+        when(player.getUniqueId()).thenReturn(BUILDER);
+        when(player.hasPermission("test.group")).thenReturn(true);
+        assertNull(check(individual, BUILDER, ClaimPermission.Build));
+        assertNull(check(publicClaim, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(group, player, ClaimPermission.Manage));
+        now.set(2000L);
+        assertNotNull(check(individual, BUILDER, ClaimPermission.Build));
+        assertNotNull(check(individual, BUILDER, ClaimPermission.Manage));
+        assertNotNull(check(publicClaim, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(group, player, ClaimPermission.Inventory));
+        assertNotNull(check(group, player, ClaimPermission.Manage));
+        assertNull(check(individual, OWNER, ClaimPermission.Inventory));
+    }
+
+    @Test
+    void unavailableServiceDeniesTemporaryNativeTrustButPreservesPermanentOtherDimension() throws Exception
+    {
+        Claim claim = claim(54L, OWNER);
+        CatCraftTrustService real = startRealService(claim);
+        real.grant(List.of(claim), BUILDER.toString(), CatCraftTrustKind.CONTAINER, java.time.Duration.ofDays(1));
+        real.grant(List.of(claim), BUILDER.toString(), CatCraftTrustKind.MANAGE, null);
+        real.stop();
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(claim, BUILDER, ClaimPermission.Manage));
+        assertNull(check(claim, OWNER, ClaimPermission.Inventory));
+    }
+
+    @Test
     void safeBuildOverlayAllowsOnlyBuildAndAccess()
     {
         Claim claim = claim(42L, OWNER);

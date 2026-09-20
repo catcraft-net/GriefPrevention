@@ -121,6 +121,23 @@ public final class CatCraftTrustService
         if (wasLoaded) store.save();
     }
 
+    /**
+     * Main-thread, indexed authorization guard. Expiry and persistence failures must
+     * never leave native temporary permissions usable while restoration is pending.
+     * Raw claim storage remains available to the recovery state machine.
+     */
+    public boolean isNativeTrustBlocked(Claim claim, String target, TrustDimension dimension)
+    {
+        Long claimId = claim.getID();
+        if (claimId == null) return false;
+        String key = TemporaryTrustRecordKey.key(claimId, target, dimension);
+        if (store.hasTransition(key)) return true;
+        TemporaryTrustRecord record = store.get(key).orElse(null);
+        return record != null && record.expiresAtMillis() > 0L
+                && (!loaded || record.expiresAtMillis() <= nowMillis.getAsLong()
+                || !Objects.equals(claim.getOwnerID(), record.ownerIdAtGrant()));
+    }
+
     public boolean isSafeBuilder(Claim claim, UUID playerId, @Nullable Player player)
     {
         if (!loaded) return false;
@@ -228,7 +245,7 @@ public final class CatCraftTrustService
         try
         {
             store.commitPreparedTransitions(transitions, reservation);
-            store.save();
+            persistJournal();
         }
         catch (IOException | RuntimeException failure)
         {
@@ -248,6 +265,7 @@ public final class CatCraftTrustService
         catch (RuntimeException failure)
         {
             logger.severe("Could not apply CatCraft trust change: " + failure.getMessage());
+            markUnavailable();
             throw failure;
         }
         try
@@ -341,7 +359,7 @@ public final class CatCraftTrustService
         try
         {
             store.commitPreparedTransitions(transitions, store.reserveRevisions(0));
-            store.save();
+            persistJournal();
         }
         catch (IOException | RuntimeException failure)
         {
@@ -362,6 +380,7 @@ public final class CatCraftTrustService
         catch (RuntimeException failure)
         {
             logger.severe("Could not apply CatCraft trust revocation: " + failure.getMessage());
+            markUnavailable();
             throw failure;
         }
         try
@@ -438,7 +457,7 @@ public final class CatCraftTrustService
         try
         {
             store.commitPreparedTransitions(transitions, store.reserveRevisions(0));
-            store.save();
+            persistJournal();
         }
         catch (IOException | RuntimeException failure)
         {
@@ -480,8 +499,9 @@ public final class CatCraftTrustService
      */
     public boolean onExternalPermissionMutation(Claim claim, String target, TrustDimension dimension)
     {
-        if (!loaded || internalMutationDepth > 0 || claim == null
+        if (internalMutationDepth > 0 || claim == null
                 || claim.getID() == null || dimension == null) return true;
+        if (!loaded) return false;
         try
         {
             return journalExternalMutations(Set.of(claim.getID()), canonicalTarget(target),
@@ -512,7 +532,8 @@ public final class CatCraftTrustService
 
     public boolean onExternalTargetMutation(Claim claim, String target)
     {
-        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (!loaded) return false;
         try
         {
             return journalExternalMutations(Set.of(claim.getID()), canonicalTarget(target),
@@ -547,7 +568,8 @@ public final class CatCraftTrustService
 
     public boolean onExternalTargetRemoved(Claim claim, String target)
     {
-        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (!loaded) return false;
         try
         {
             return journalExternalMutations(claimIds(claim, new HashSet<>()), canonicalTarget(target),
@@ -577,7 +599,8 @@ public final class CatCraftTrustService
 
     public boolean onExternalPermissionsCleared(Claim claim)
     {
-        if (!loaded || internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (internalMutationDepth > 0 || claim == null || claim.getID() == null) return true;
+        if (!loaded) return false;
         try
         {
             return journalExternalMutations(claimIds(claim, new HashSet<>()), null,
@@ -699,11 +722,12 @@ public final class CatCraftTrustService
             return false;
         }
         if (prepared.isEmpty()) return true;
+        if (!loaded) return false;
 
         try
         {
             store.commitExternalTransitions(prepared);
-            store.save();
+            persistJournal();
             return true;
         }
         catch (IOException | RuntimeException failure)
@@ -824,7 +848,7 @@ public final class CatCraftTrustService
         {
             if (!mutations.isEmpty())
             {
-                store.save();
+                persistJournal();
             }
             for (ExpirationPreparation preparation : preparations)
             {
@@ -1036,7 +1060,16 @@ public final class CatCraftTrustService
             }
             NativeTrustState current = captureTransitionState(transition);
             TrustDimension dimension = dimensionFromKey(transition.key());
-            if (matchesRecordState(current, transition.intendedState(), dimension))
+            if (transition.precedingRecord() != null && transition.intendedRecord() == null
+                    && matchesNativeState(transition.precedingState(), transition.intendedState(), dimension)
+                    && matchesNativeState(current, transition.precedingState(), dimension))
+            {
+                // Native state cannot prove that a same-state permanent replacement completed.
+                // Preserve the preceding expiry rather than promote an unconfirmed grant.
+                claimAccess.save(snapshot.claimId());
+                store.abortTransition(transition.key());
+            }
+            else if (matchesRecordState(current, transition.intendedState(), dimension))
             {
                 // Reload may see an in-memory restoration whose earlier native save failed.
                 claimAccess.save(snapshot.claimId());
@@ -1049,6 +1082,7 @@ public final class CatCraftTrustService
             }
             else
             {
+                claimAccess.save(snapshot.claimId());
                 store.discardTransition(transition.key());
             }
             changed = true;
@@ -1066,6 +1100,7 @@ public final class CatCraftTrustService
                     record.dimension(), record);
             if (!matchesRecordState(current, record.expectedState(), record.dimension()))
             {
+                claimAccess.save(record.claimId());
                 store.removeIfRevision(record.key(), record.revision());
                 changed = true;
                 continue;
@@ -1171,6 +1206,14 @@ public final class CatCraftTrustService
         int first = key.indexOf('|');
         int second = key.indexOf('|', first + 1);
         return TrustDimension.valueOf(key.substring(first + 1, second));
+    }
+
+    private void persistJournal() throws IOException
+    {
+        store.save();
+        // Rotate the same prepared journal into the recovery copy before native writes.
+        // Falling back to an older snapshot must not forget a newly applied grant.
+        store.save();
     }
 
     private boolean persistBestEffort()

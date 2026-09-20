@@ -35,6 +35,101 @@ class CatCraftTrustServiceTest
     Path directory;
 
     @Test
+    void backupRetainsPreparedGrantWhenPrimaryIsLostAfterNativeWrite() throws Exception
+    {
+        Path file = directory.resolve("prepared-backup.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(new CatCraftTrustStateStore(file, 10),
+                access, new FakeScheduler(), () -> 1000L, 10);
+        service.start();
+        access.failAfterSave = true;
+        assertThrows(RuntimeException.class, () -> service.grant(List.of(claim(42L, OWNER)), TARGET,
+                CatCraftTrustKind.CONTAINER, Duration.ofSeconds(1)));
+        access.failAfterSave = false;
+        Files.delete(file);
+        CatCraftTrustService restarted = new CatCraftTrustService(new CatCraftTrustStateStore(file, 10),
+                access, new FakeScheduler(), () -> 2000L, 10);
+        restarted.start();
+        restarted.processDue(2000L);
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
+    void backupRecordRecoveryFlushesUnsavedNativeRestorationBeforeDiscardingMetadata() throws Exception
+    {
+        Path file = directory.resolve("backup-reload.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = new CatCraftTrustService(new CatCraftTrustStateStore(file, 10),
+                access, new FakeScheduler(), () -> 1000L, 10);
+        service.start();
+        service.grant(List.of(claim(42L, OWNER)), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofSeconds(1));
+        // Model fallback to the valid pre-expiry record after a failed native restore save.
+        Files.copy(file, file.resolveSibling(file.getFileName() + ".bak"), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        access.apply(42L, TARGET, NONE, TrustDimension.PERMISSION);
+        Files.delete(file);
+        CatCraftTrustService reloaded = new CatCraftTrustService(new CatCraftTrustStateStore(file, 10),
+                access, new FakeScheduler(), () -> 2000L, 10);
+        reloaded.start();
+        access.states.clear();
+        access.states.putAll(access.persistedStates);
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
+    void failedExternalSaveCannotTurnTemporaryContainerTrustPermanentOnRestart() throws Exception
+    {
+        verifyFailedExternalSaveRecovery(false);
+    }
+
+    @Test
+    void failedExternalSaveCannotForgetUnsavedRevocationOnReload() throws Exception
+    {
+        verifyFailedExternalSaveRecovery(true);
+    }
+
+    private void verifyFailedExternalSaveRecovery(boolean reload) throws Exception
+    {
+        Path file = directory.resolve("external-restart.properties");
+        FakeAccess access = access(42L, OWNER, NONE);
+        AtomicLong now = new AtomicLong(1000L);
+        CatCraftTrustService service = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(), now::get, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofSeconds(1));
+        assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
+        access.apply(42L, TARGET, NONE, TrustDimension.PERMISSION);
+        access.failSave = true;
+        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+        if (!reload)
+        {
+            access.states.clear();
+            access.states.putAll(access.persistedStates);
+        }
+        access.failSave = false;
+        now.set(2000L);
+        CatCraftTrustService restarted = new CatCraftTrustService(
+                new CatCraftTrustStateStore(file, 10), access, new FakeScheduler(), now::get, 10);
+        restarted.start();
+        restarted.processDue(now.get());
+        access.states.clear();
+        access.states.putAll(access.persistedStates);
+        assertEquals(NONE, access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
+    void partialNativeGrantFailureMakesServiceUnavailable() throws Exception
+    {
+        FakeAccess access = access(42L, OWNER, NONE);
+        CatCraftTrustService service = service(access, new FakeScheduler(), new AtomicLong(1000L), 10);
+        service.start();
+        access.failAfterApply = true;
+        assertThrows(RuntimeException.class, () -> service.grant(List.of(claim(42L, OWNER)), TARGET,
+                CatCraftTrustKind.CONTAINER, Duration.ofDays(1)));
+        assertFalse(service.isStarted());
+    }
+
+    @Test
     void reloadAfterFailedNativeExpirySaveCannotForgetDurableTemporaryGrant() throws Exception
     {
         Path file = directory.resolve("native-save-recovery.properties");
@@ -1103,7 +1198,7 @@ class CatCraftTrustServiceTest
     }
 
     @Test
-    void externalMutationRemovesPendingTransitionBeforePersistence()
+    void unavailableServiceRejectsExternalMutationAndPreservesRecoveryJournal()
             throws Exception
     {
         Path file = directory.resolve("external-transition.properties");
@@ -1118,11 +1213,8 @@ class CatCraftTrustServiceTest
         assertThrows(RuntimeException.class, () -> service.grant(
                 List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1)));
 
-        service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
-        access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION),
-                new NativeTrustState(ClaimPermission.Access, false, true));
-        FakeAccess restartedAccess = access(42L, OWNER,
-                new NativeTrustState(ClaimPermission.Access, false, true));
+        assertFalse(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
+        FakeAccess restartedAccess = access(42L, OWNER, NONE);
         CatCraftTrustService restarted = new CatCraftTrustService(
                 new CatCraftTrustStateStore(file, 10), restartedAccess,
                 new FakeScheduler(), () -> 1_700_000_000_000L, 10);
@@ -1360,6 +1452,7 @@ class CatCraftTrustServiceTest
         private final List<String> applied = new ArrayList<>();
         private boolean failApply;
         private boolean failSave;
+        private boolean failAfterSave;
         private final Map<String, NativeTrustState> persistedStates = new HashMap<>();
         private boolean failResolve;
         private long failCaptureClaimId = Long.MIN_VALUE;
@@ -1410,6 +1503,7 @@ class CatCraftTrustServiceTest
         {
             if (failSave) throw new IllegalStateException("native save failed");
             persistedStates.putAll(states);
+            if (failAfterSave) throw new IllegalStateException("interrupted after native save");
         }
 
         private String key(long claimId, String target, TrustDimension dimension)

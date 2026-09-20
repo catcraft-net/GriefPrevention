@@ -177,6 +177,82 @@ class ReadOnlyContainerListenerTest
         if (bukkit != null) bukkit.close();
     }
 
+    @ParameterizedTest
+    @EnumSource(ClickType.class)
+    void realContainerClicksAreDeniedAfterPermissionIsLostIncludingBottomSlots(ClickType click)
+    {
+        when(trusts.isSafeBuilder(claim, playerId, player)).thenReturn(false);
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+                .thenReturn(() -> "trust expired");
+        InventoryView open = view(source);
+        when(player.getOpenInventory()).thenReturn(open);
+        InventoryClickEvent event = new InventoryClickEvent(open,
+                InventoryType.SlotType.CONTAINER, 10, click, InventoryAction.UNKNOWN);
+        listener.onInventoryClick(event);
+        assertTrue(event.isCancelled());
+        verify(player, never()).closeInventory();
+        scheduled.removeFirst().run();
+        verify(player).closeInventory();
+    }
+
+    @Test
+    void realContainerDragIsDeniedAfterDowngradeToSafeBuild()
+    {
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+                .thenReturn(() -> "container trust revoked");
+        ItemStack cursor = mock(ItemStack.class);
+        InventoryDragEvent event = new InventoryDragEvent(view(source), cursor, cursor, true, java.util.Map.of(0, cursor));
+        listener.onInventoryDrag(event);
+        assertTrue(event.isCancelled());
+    }
+
+    @Test
+    void realContainerRemainsUsableWithCurrentInventoryPermission()
+    {
+        InventoryClickEvent event = new InventoryClickEvent(view(source),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(event);
+        assertFalse(event.isCancelled());
+        assertTrue(scheduled.isEmpty());
+    }
+
+    @Test
+    void doubleChestChecksBothSidesForRevokedTrust()
+    {
+        org.bukkit.block.DoubleChest doubleChest = mock(org.bukkit.block.DoubleChest.class);
+        Chest right = mock(Chest.class);
+        Block rightBlock = mock(Block.class);
+        Claim denied = mock(Claim.class);
+        Location rightLocation = new Location(world, 20, 64, 20);
+        when(source.getHolder()).thenReturn(doubleChest);
+        when(doubleChest.getLeftSide()).thenReturn(state);
+        when(doubleChest.getRightSide()).thenReturn(right);
+        when(right.getBlock()).thenReturn(rightBlock);
+        when(rightBlock.getLocation()).thenReturn(rightLocation);
+        when(dataStore.getClaimAt(eq(rightLocation), eq(true), isNull())).thenReturn(denied);
+        when(denied.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+                .thenReturn(() -> "no right-side trust");
+        InventoryClickEvent event = new InventoryClickEvent(view(source),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(event);
+        assertTrue(event.isCancelled());
+    }
+
+    @Test
+    void entityStorageChecksCurrentClaimTrust()
+    {
+        org.bukkit.entity.minecart.StorageMinecart cart = mock(org.bukkit.entity.minecart.StorageMinecart.class);
+        when(source.getHolder()).thenReturn(cart);
+        Location cartLocation = player.getLocation();
+        when(cart.getLocation()).thenReturn(cartLocation);
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+                .thenReturn(() -> "trust revoked");
+        InventoryClickEvent event = new InventoryClickEvent(view(source),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(event);
+        assertTrue(event.isCancelled());
+    }
+
     @Test
     void blockInteractionCancelsLiveOpenAndOpensDetachedCloneNextTick()
     {

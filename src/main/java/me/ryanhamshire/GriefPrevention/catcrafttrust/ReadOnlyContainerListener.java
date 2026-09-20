@@ -1,6 +1,7 @@
 package me.ryanhamshire.GriefPrevention.catcrafttrust;
 
 import me.ryanhamshire.GriefPrevention.Claim;
+import me.ryanhamshire.GriefPrevention.ClaimPermission;
 import me.ryanhamshire.GriefPrevention.DataStore;
 import me.ryanhamshire.GriefPrevention.GriefPrevention;
 import org.bukkit.Location;
@@ -223,7 +224,15 @@ public final class ReadOnlyContainerListener implements Listener
         if (!(event.getWhoClicked() instanceof Player player)) return;
         Inventory top = safeTop(event);
         SessionHolder holder = sessionHolder(top);
-        if (holder == null) return;
+        if (holder == null)
+        {
+            if (!realContainerAllowed(top, player, event))
+            {
+                event.setCancelled(true);
+                closeRealContainerNextTick(player, top);
+            }
+            return;
+        }
         event.setCancelled(true);
         ViewSession session = sessions.get(player.getUniqueId());
         if (session == null || !session.token().equals(holder.token())
@@ -239,13 +248,77 @@ public final class ReadOnlyContainerListener implements Listener
         if (!(event.getWhoClicked() instanceof Player player)) return;
         Inventory top = safeTop(event);
         SessionHolder holder = sessionHolder(top);
-        if (holder == null) return;
+        if (holder == null)
+        {
+            if (!realContainerAllowed(top, player, event))
+            {
+                event.setCancelled(true);
+                closeRealContainerNextTick(player, top);
+            }
+            return;
+        }
         event.setCancelled(true);
         ViewSession session = sessions.get(player.getUniqueId());
         if (session == null || !session.token().equals(holder.token())
                 || !sessionStillValid(session, player))
         {
             clearViewer(player.getUniqueId(), true);
+        }
+    }
+
+    private boolean realContainerAllowed(@Nullable Inventory top, Player player, Event event)
+    {
+        try
+        {
+            if (top == null) return false;
+            InventoryHolder holder = top.getHolder();
+            if (holder instanceof DoubleChest chest)
+            {
+                return storageHolderAllowed(chest.getLeftSide(), player, event)
+                        && storageHolderAllowed(chest.getRightSide(), player, event);
+            }
+            if (holder instanceof BlockInventoryHolder || holder instanceof Entity && !(holder instanceof HumanEntity))
+                return storageHolderAllowed(holder, player, event);
+            // Location-bearing custom storage can also outlive the trust used to open it.
+            Location location = top.getLocation();
+            if (location != null) return inventoryPermissionAt(location, player, event);
+            return !isPotentialStorage(top, holder) || !safeBuilder(claimAt(player.getLocation()), player);
+        }
+        catch (RuntimeException failure)
+        {
+            return false;
+        }
+    }
+
+    private boolean storageHolderAllowed(@Nullable InventoryHolder holder, Player player, Event event)
+    {
+        Location location = holderLocation(holder);
+        return location != null && inventoryPermissionAt(location, player, event);
+    }
+
+    private boolean inventoryPermissionAt(Location location, Player player, Event event)
+    {
+        Claim claim = claimAt(location);
+        return claim == null || claim.checkPermission(player, ClaimPermission.Inventory, event) == null;
+    }
+
+    private void closeRealContainerNextTick(Player player, @Nullable Inventory top)
+    {
+        UUID id = player.getUniqueId();
+        if (pendingTasks.containsKey(id)) return;
+        try
+        {
+            BukkitTask task = plugin.getServer().getScheduler().runTask(plugin, () -> {
+                pendingTasks.remove(id);
+                if (player.isOnline() && player.getOpenInventory().getTopInventory().equals(top))
+                    player.closeInventory();
+            });
+            pendingTasks.put(id, task.getTaskId());
+        }
+        catch (RuntimeException failure)
+        {
+            // This event remains cancelled even if the server cannot schedule the close.
+            pendingTasks.remove(id);
         }
     }
 
