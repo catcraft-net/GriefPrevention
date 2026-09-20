@@ -427,12 +427,20 @@ public class DatabaseDataStore extends DataStore
             catch (SQLException | RuntimeException failure)
             {
                 try { databaseConnection.rollback(); }
-                catch (SQLException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                catch (SQLException rollbackFailure)
+                {
+                    failure.addSuppressed(rollbackFailure);
+                    // Switching autocommit on would commit an unresolved transaction.
+                    Connection failedConnection = databaseConnection;
+                    databaseConnection = null;
+                    try { failedConnection.close(); }
+                    catch (SQLException closeFailure) { failure.addSuppressed(closeFailure); }
+                }
                 throw failure;
             }
             finally
             {
-                databaseConnection.setAutoCommit(true);
+                if (databaseConnection != null) databaseConnection.setAutoCommit(true);
             }
         }
         catch (SQLException failure)

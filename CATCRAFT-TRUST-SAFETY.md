@@ -38,7 +38,11 @@ State is stored at:
 
 `plugins/GriefPreventionData/CatCraftTrust/temporary-trust.properties`
 
-The primary file has an atomic backup. Changes use a write-ahead transition journal so a crash between metadata and native-claim writes can be reconciled. Revisions prevent an older timer from overwriting a newer trust decision. Expiry restores the state that existed before the temporary grant only when the claim owner and current native state still match that record. Newer external changes, claim deletion, ownership transfer, and stale records invalidate the old expiry.
+The primary file is replaced atomically. Before native permissions change, the prepared journal is flushed into both the primary and recovery copies. Changes use a write-ahead transition journal so a crash between metadata and native-claim writes can be reconciled. Revisions prevent an older timer from overwriting a newer trust decision. Expiry restores the state that existed before the temporary grant only when the claim owner and current native state still match that record. Newer external changes, claim deletion, ownership transfer, and stale records invalidate the old expiry.
+
+Native claim saves report failures to the journal. Flat-file claim writes use a flushed temporary file and atomic replacement; SQL claim replacement is transactional and serialized with player-data writes. Recovery never drops a transition or mismatched record before confirming the current native claim is saved.
+
+Native permission checks reject expired or unresolved temporary grants even if the expiry worker stops after a persistence failure. Existing real storage views recheck current container permission on every click or drag, including actions originating in the player's inventory, and close after denied interaction. Personal inventories and transient workstations remain usable. If startup cannot read or reconcile trust metadata, delegated trust is blocked until the files are repaired and the server restarted; claim owners and administrative bypass remain available. Claim transfers are rejected while the trust service is unavailable.
 
 Only the next expiry is scheduled. Due records are processed in a bounded batch, with excess work continued on the next tick. There is no per-tick scanner, repeating CatCraft task, world scan, chunk scan, online-player scan, or task per grant. Disk access occurs on trust changes, lifecycle reconciliation, expiry, and shutdown, never on inventory clicks.
 
@@ -62,7 +66,7 @@ Bounds are 1-3650 days, 100-100000 records, 1-1000 expirations per tick, and a 1
 
 Stop the server and back up the GriefPrevention data folder and the old `plugins/GPTrust` folder together. Remove the GPTrust add-on and any TrustHooks-patched GriefPrevention JAR, install only this fork, then start the server.
 
-If integrated state does not already exist, the fork strictly validates and imports compatible records from `plugins/GPTrust/temporary-trust.properties`. It imports only records whose claim, owner, and current native state still match; it never overwrites a newer trust choice. After the integrated state is durable, the legacy file is renamed to `temporary-trust.properties.migrated`. Malformed legacy state stops the CatCraft trust service without disabling ordinary GriefPrevention claim protection.
+If integrated state does not already exist, the fork strictly validates and imports compatible records from `plugins/GPTrust/temporary-trust.properties`. It imports only records whose claim, owner, and current native state still match; it never overwrites a newer trust choice. After the integrated state is durable, the legacy file is renamed to `temporary-trust.properties.migrated`. Malformed legacy state leaves ordinary GriefPrevention claim protection active but blocks delegated trust, because its temporary and permanent entries cannot be safely distinguished until recovery succeeds.
 
 Existing GriefPrevention claim files and database tables are not migrated or replaced. The fork adds only its sidecar metadata file.
 
@@ -71,7 +75,7 @@ Existing GriefPrevention claim files and database tables are not migrated or rep
 Replacing this fork with the previous GriefPrevention JAR does not corrupt or rewrite existing claim data, but the old JAR cannot understand or expire the sidecar records:
 
 - A safe Build Trust target is stored natively as Access Trust. After downgrade, the target loses building permission but keeps ordinary Access Trust until explicitly untrusted.
-- Temporary Access, Container, Full, or Permission Trust remains active indefinitely after downgrade because the old JAR has no expiry service.
+- Temporary Build Trust also leaves its native Access Trust active. Temporary Access, Container, Full, or Permission Trust remains active indefinitely after downgrade because the old JAR has no expiry service.
 - The CatCraft sidecar file is ignored by the old JAR. Leaving it in place is not destructive, but reinstalling the fork later may reconcile it.
 
 For a controlled rollback, let temporary grants expire or remove affected trust entries with `/untrust`, check `/trustlist`, stop the server cleanly, back up both data locations, and then replace the JAR.

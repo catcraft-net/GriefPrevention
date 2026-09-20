@@ -628,7 +628,8 @@ public class Claim
 
         TrustDimension dimension = permissionLevel == ClaimPermission.Manage
                 ? TrustDimension.MANAGER : TrustDimension.PERMISSION;
-        if (!invalidateCatCraftPermission(playerID, dimension)) return;
+        if (!invalidateCatCraftPermission(playerID, dimension))
+            throw new IllegalStateException("CatCraft trust invalidation could not be persisted");
 
         try
         {
@@ -671,7 +672,8 @@ public class Claim
     //revokes a permission for a player or the public
     public void dropPermission(@NotNull String playerID)
     {
-        if (!invalidateRemovedCatCraftTarget(playerID)) return;
+        if (!invalidateRemovedCatCraftTarget(playerID))
+            throw new IllegalStateException("CatCraft trust invalidation could not be persisted");
         try
         {
             dropPermissionWithoutCatCraftInvalidation(playerID);
@@ -697,7 +699,8 @@ public class Claim
     //clears all permissions (except owner of course)
     public void clearPermissions()
     {
-        if (!invalidateAllCatCraftPermissions()) return;
+        if (!invalidateAllCatCraftPermissions())
+            throw new IllegalStateException("CatCraft trust invalidation could not be persisted");
         try
         {
             clearPermissionsWithoutCatCraftInvalidation();

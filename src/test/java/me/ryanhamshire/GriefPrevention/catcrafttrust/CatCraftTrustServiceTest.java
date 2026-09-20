@@ -125,7 +125,8 @@ class CatCraftTrustServiceTest
         assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
         access.apply(42L, TARGET, NONE, TrustDimension.PERMISSION);
         access.failSave = true;
-        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+        assertThrows(IllegalStateException.class,
+                () -> service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
         if (!reload)
         {
             access.states.clear();
@@ -191,7 +192,8 @@ class CatCraftTrustServiceTest
         assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
         access.apply(42L, TARGET, NONE, TrustDimension.PERMISSION);
         access.failSave = true;
-        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+        assertThrows(IllegalStateException.class,
+                () -> service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
         assertFalse(service.isStarted());
         CatCraftTrustStateStore durable = new CatCraftTrustStateStore(directory.resolve("state-1000"), 10);
         durable.load();
@@ -460,7 +462,8 @@ class CatCraftTrustServiceTest
 
         assertTrue(service.onExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
         Files.createDirectory(file.resolveSibling(file.getFileName() + ".tmp"));
-        service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION);
+        assertThrows(IllegalStateException.class,
+                () -> service.completeExternalPermissionMutation(claim, TARGET, TrustDimension.PERMISSION));
 
         assertFalse(service.isStarted());
         CatCraftTrustStateStore journal = new CatCraftTrustStateStore(file, 10);

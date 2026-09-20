@@ -25,6 +25,35 @@ class CatCraftTrustRuntimeTest
     @TempDir
     Path directory;
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void unreadableStateRetainsFailClosedPermissionGuardAndContainerListener(boolean legacyFailure) throws Exception
+    {
+        GriefPrevention plugin = mock(GriefPrevention.class);
+        DataStore dataStore = mock(DataStore.class);
+        Server server = mock(Server.class);
+        PluginManager manager = mock(PluginManager.class);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(Logger.getLogger("failed-start"));
+        when(server.getPluginManager()).thenReturn(manager);
+        when(server.getScheduler()).thenReturn(mock(BukkitScheduler.class));
+        Path primary = directory.resolve("invalid-primary.properties");
+        Path legacy = directory.resolve("invalid-legacy.properties");
+        Files.writeString(legacyFailure ? legacy : primary, "version=invalid\n");
+        CatCraftTrustRuntime runtime = org.junit.jupiter.api.Assertions.assertDoesNotThrow(() ->
+                CatCraftTrustRuntime.start(plugin, dataStore,
+                        CatCraftTrustSettings.bounded(true, 30, 100, 100, 3), primary, legacy));
+        assertFalse(runtime.service().isStarted());
+        me.ryanhamshire.GriefPrevention.Claim claim = mock(me.ryanhamshire.GriefPrevention.Claim.class);
+        when(claim.getID()).thenReturn(42L);
+        assertTrue(runtime.service().isNativeTrustBlocked(claim, "public", TrustDimension.PERMISSION));
+        assertTrue(runtime.service().isNativeTrustBlocked(claim, "[group]", TrustDimension.MANAGER));
+        verify(manager).registerEvents(any(ReadOnlyContainerListener.class), eq(plugin));
+        runtime.stop();
+        org.junit.jupiter.api.Assertions.assertEquals("version=invalid\n",
+                Files.readString(legacyFailure ? legacy : primary));
+    }
+
     @Test
     void permanentBuildRecordsDoNotProduceTemporaryGrantRollbackWarning() throws Exception
     {

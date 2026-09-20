@@ -67,6 +67,21 @@ class SafeBuildPermissionIntegrationTest
     }
 
     @Test
+    void refusedNativeMutationThrowsInsteadOfSilentlyReportingSuccess()
+    {
+        Claim claim = claim(56L, OWNER);
+        claim.inDataStore = true;
+        when(service.onExternalPermissionMutation(any(), any(), any())).thenReturn(false);
+        when(service.onExternalTargetRemoved(any(), any())).thenReturn(false);
+        when(service.onExternalPermissionsCleared(any())).thenReturn(false);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> claim.setPermission(BUILDER.toString(), ClaimPermission.Inventory));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> claim.dropPermission(BUILDER.toString()));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, claim::clearPermissions);
+    }
+
+    @Test
     void expiryDeniesNativeUuidPublicGroupAndManagerGrantsBeforeWorkerRuns() throws Exception
     {
         java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1000L);
@@ -258,7 +273,8 @@ class SafeBuildPermissionIntegrationTest
         when(service.onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION))
                 .thenReturn(false);
 
-        claim.setPermission(target, ClaimPermission.Access);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> claim.setPermission(target, ClaimPermission.Access));
 
         assertNull(claim.getPermission(target));
         verify(service).onExternalPermissionMutation(claim, target, TrustDimension.PERMISSION);
@@ -321,9 +337,11 @@ class SafeBuildPermissionIntegrationTest
         when(service.isSafeBuilder(claim, BUILDER, null)).thenReturn(true);
 
         assertNotNull(check(claim, BUILDER, ClaimPermission.Build));
-        claim.setPermission(BUILDER.toString(), ClaimPermission.Access);
-        claim.dropPermission(BUILDER.toString());
-        claim.clearPermissions();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> claim.setPermission(BUILDER.toString(), ClaimPermission.Access));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> claim.dropPermission(BUILDER.toString()));
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, claim::clearPermissions);
 
         verify(service, never()).isSafeBuilder(any(), any(), any());
         verify(service, never()).onExternalPermissionMutation(any(), any(), any());

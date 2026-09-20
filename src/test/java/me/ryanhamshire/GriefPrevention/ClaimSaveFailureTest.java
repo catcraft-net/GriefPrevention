@@ -21,6 +21,26 @@ class ClaimSaveFailureTest
     }
 
     @Test
+    void failedRollbackDiscardsConnectionWithoutCommittingPartialClaimDelete() throws Exception
+    {
+        DatabaseDataStore store = mock(DatabaseDataStore.class, CALLS_REAL_METHODS);
+        Connection connection = mock(Connection.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        var field = DatabaseDataStore.class.getDeclaredField("databaseConnection");
+        field.setAccessible(true);
+        field.set(store, connection);
+        when(connection.isValid(3)).thenReturn(true);
+        when(connection.getAutoCommit()).thenReturn(true);
+        when(connection.prepareStatement(anyString())).thenReturn(statement);
+        when(statement.executeUpdate()).thenReturn(1).thenThrow(new SQLException("insert failed"));
+        doThrow(new SQLException("rollback failed")).when(connection).rollback();
+        doReturn("world;0;0;0").when(store).locationToString(any());
+        assertThrows(RuntimeException.class, () -> store.saveClaim(claim(42L)));
+        verify(connection, never()).setAutoCommit(true);
+        assertNull(field.get(store));
+    }
+
+    @Test
     void asyncPlayerSaveCannotJoinAnInFlightClaimTransaction() throws Exception
     {
         DatabaseDataStore store = mock(DatabaseDataStore.class, CALLS_REAL_METHODS);

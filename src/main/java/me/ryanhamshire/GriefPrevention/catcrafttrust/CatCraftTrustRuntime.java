@@ -55,20 +55,28 @@ public final class CatCraftTrustRuntime
         Objects.requireNonNull(legacyStateFile, "legacyStateFile");
         CatCraftTrustStateStore store = new CatCraftTrustStateStore(
                 stateFile, settings.maximumRecords());
-        if (!Files.isRegularFile(stateFile)
-                && !Files.isRegularFile(stateFile.resolveSibling(stateFile.getFileName() + ".bak")))
-        {
-            int imported = GPTrustMigration.importIfPresent(
-                    legacyStateFile, store, dataStore, settings.maximumRecords());
-            if (imported > 0) plugin.getLogger().info("Imported " + imported + " GPTrust record(s).");
-        }
 
         ClaimTrustAccess claimAccess = new DataStoreClaimTrustAccess(dataStore);
         TrustTaskScheduler scheduler = new BukkitTrustTaskScheduler(plugin);
         CatCraftTrustService service = new CatCraftTrustService(store, claimAccess, scheduler,
                 System::currentTimeMillis, settings.maximumExpirationsPerTick());
         service.setExpirationListener(record -> notifyExpiration(plugin, record));
-        service.start();
+        try
+        {
+            if (!Files.isRegularFile(stateFile)
+                    && !Files.isRegularFile(stateFile.resolveSibling(stateFile.getFileName() + ".bak")))
+            {
+                int imported = GPTrustMigration.importIfPresent(
+                        legacyStateFile, store, dataStore, settings.maximumRecords());
+                if (imported > 0) plugin.getLogger().info("Imported " + imported + " GPTrust record(s).");
+            }
+            service.start();
+        }
+        catch (IOException | RuntimeException failure)
+        {
+            plugin.getLogger().log(java.util.logging.Level.SEVERE,
+                    "CatCraft trust recovery failed. Delegated claim trust is blocked; owners and administrative bypass remain available. Repair the state files and restart.", failure);
+        }
 
         SafeBuildTrustProvider provider = new SafeBuildTrustProvider()
         {

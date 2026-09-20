@@ -179,6 +179,7 @@ public final class ReadOnlyContainerListener implements Listener
             return;
         }
 
+        if (isPersonalOrWorkstation(top, holder, player)) return;
         Block block = blockForHolder(holder);
         if (block == null)
         {
@@ -266,12 +267,22 @@ public final class ReadOnlyContainerListener implements Listener
         }
     }
 
+    private static boolean isPersonalOrWorkstation(Inventory inventory, @Nullable InventoryHolder holder, Player player)
+    {
+        InventoryType type = inventory.getType();
+        boolean ownHolder = holder == null || holder instanceof HumanEntity human
+                && human.getUniqueId().equals(player.getUniqueId());
+        return ownHolder && (type == InventoryType.PLAYER || type == InventoryType.CRAFTING
+                || type == InventoryType.CREATIVE || NON_STORAGE_TYPES.contains(type));
+    }
+
     private boolean realContainerAllowed(@Nullable Inventory top, Player player, Event event)
     {
         try
         {
             if (top == null) return false;
             InventoryHolder holder = top.getHolder();
+            if (isPersonalOrWorkstation(top, holder, player)) return true;
             if (holder instanceof DoubleChest chest)
             {
                 return storageHolderAllowed(chest.getLeftSide(), player, event)

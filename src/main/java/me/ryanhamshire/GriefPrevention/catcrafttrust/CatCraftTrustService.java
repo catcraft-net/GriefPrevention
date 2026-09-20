@@ -41,6 +41,7 @@ public final class CatCraftTrustService
     private Consumer<TemporaryTrustRecord> expirationListener = ignored -> { };
     private ScheduledHandle expirationHandle;
     private boolean loaded;
+    private boolean reconciled;
     private int internalMutationDepth;
 
     public CatCraftTrustService(CatCraftTrustStateStore store,
@@ -92,12 +93,14 @@ public final class CatCraftTrustService
     {
         cancelScheduledExpiration();
         loaded = false;
+        reconciled = false;
         store.load();
         try
         {
             reconcileStartup();
             loaded = true;
             scheduleNextExpiration();
+            reconciled = true;
         }
         catch (IOException | RuntimeException | Error failure)
         {
@@ -128,6 +131,9 @@ public final class CatCraftTrustService
      */
     public boolean isNativeTrustBlocked(Claim claim, String target, TrustDimension dimension)
     {
+        // Until startup reconciliation succeeds, unknown metadata cannot distinguish
+        // permanent native trust from an orphaned temporary grant.
+        if (!reconciled) return true;
         Long claimId = claim.getID();
         if (claimId == null) return false;
         String key = TemporaryTrustRecordKey.key(claimId, target, dimension);
@@ -527,6 +533,7 @@ public final class CatCraftTrustService
         {
             logger.severe("Could not complete CatCraft trust invalidation: " + ex.getMessage());
             markUnavailable();
+            throw new IllegalStateException("Could not persist native trust mutation", ex);
         }
     }
 
@@ -563,6 +570,7 @@ public final class CatCraftTrustService
         {
             logger.severe("Could not complete CatCraft trust invalidation: " + ex.getMessage());
             markUnavailable();
+            throw new IllegalStateException("Could not persist native trust mutation", ex);
         }
     }
 
@@ -594,6 +602,7 @@ public final class CatCraftTrustService
         {
             logger.severe("Could not complete CatCraft trust invalidation: " + ex.getMessage());
             markUnavailable();
+            throw new IllegalStateException("Could not persist native trust mutation", ex);
         }
     }
 
@@ -624,6 +633,7 @@ public final class CatCraftTrustService
         {
             logger.severe("Could not complete CatCraft trust invalidation: " + ex.getMessage());
             markUnavailable();
+            throw new IllegalStateException("Could not persist native trust mutation", ex);
         }
     }
 
@@ -722,7 +732,6 @@ public final class CatCraftTrustService
             return false;
         }
         if (prepared.isEmpty()) return true;
-        if (!loaded) return false;
 
         try
         {
@@ -752,7 +761,7 @@ public final class CatCraftTrustService
         if (!persistBestEffort())
         {
             markUnavailable();
-            return;
+            throw new IllegalStateException("Could not persist completed trust mutation");
         }
         scheduleNextExpiration();
     }

@@ -178,6 +178,32 @@ class ReadOnlyContainerListenerTest
     }
 
     @ParameterizedTest
+    @EnumSource(value = InventoryType.class, names = {"CRAFTING", "PLAYER", "CREATIVE", "ANVIL", "WORKBENCH"})
+    void safeBuildersCanUsePersonalInventoriesAndLocationBearingWorkstations(InventoryType type)
+    {
+        Inventory top = mock(Inventory.class);
+        Location location = player.getLocation();
+        when(top.getType()).thenReturn(type);
+        when(top.getLocation()).thenReturn(location);
+        if (type == InventoryType.CRAFTING || type == InventoryType.PLAYER || type == InventoryType.CREATIVE || type == InventoryType.WORKBENCH)
+            when(top.getHolder()).thenReturn(player);
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+                .thenReturn(() -> "no storage permission");
+        InventoryOpenEvent open = new InventoryOpenEvent(view(top));
+        listener.onInventoryOpen(open);
+        assertFalse(open.isCancelled());
+        InventoryClickEvent click = new InventoryClickEvent(view(top),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(click);
+        assertFalse(click.isCancelled());
+        ItemStack cursor = mock(ItemStack.class);
+        InventoryDragEvent drag = new InventoryDragEvent(view(top), cursor, cursor, true, java.util.Map.of(0, cursor));
+        listener.onInventoryDrag(drag);
+        assertFalse(drag.isCancelled());
+        assertTrue(scheduled.isEmpty());
+    }
+
+    @ParameterizedTest
     @EnumSource(value = InventoryType.class, names = {"WORKBENCH", "ANVIL", "ENCHANTING", "GRINDSTONE", "LOOM", "CARTOGRAPHY", "STONECUTTER", "SMITHING"})
     void safeBuilderCanOpenTransientWorkstations(InventoryType type)
     {

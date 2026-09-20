@@ -410,7 +410,7 @@ public abstract class DataStore
 
         CatCraftTrustService catCraftTrust = GriefPrevention.instance == null
                 ? null : GriefPrevention.instance.catCraftTrustService;
-        if (catCraftTrust != null && catCraftTrust.isStarted())
+        if (catCraftTrust != null)
         {
             try
             {

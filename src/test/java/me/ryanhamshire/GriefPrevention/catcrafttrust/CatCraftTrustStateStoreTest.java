@@ -34,6 +34,25 @@ class CatCraftTrustStateStoreTest
     Path directory;
 
     @Test
+    void malformedUnicodePrimaryUsesValidBackupAndCanBeRepaired() throws Exception
+    {
+        Path file = directory.resolve("unicode.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord record = record(42L, "public", 2000L, 1L);
+        store.put(record);
+        store.save();
+        store.save();
+        Files.writeString(file, "version=" + (char) 92 + "u12");
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+        assertEquals(List.of(record), recovered.values());
+        recovered.save();
+        CatCraftTrustStateStore repaired = new CatCraftTrustStateStore(file, 10);
+        repaired.load();
+        assertEquals(List.of(record), repaired.values());
+    }
+
+    @Test
     void roundTripsRecordsAndIndexesCaseInsensitiveTargets() throws Exception
     {
         Path file = directory.resolve("temporary-trust.properties");

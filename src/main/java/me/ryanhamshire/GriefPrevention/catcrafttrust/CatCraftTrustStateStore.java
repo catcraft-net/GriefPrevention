@@ -694,6 +694,10 @@ public final class CatCraftTrustStateStore
         {
             properties.load(reader);
         }
+        catch (IllegalArgumentException failure)
+        {
+            throw new IOException("Malformed CatCraft trust properties", failure);
+        }
         for (String propertyName : properties.stringPropertyNames())
         {
             String value = properties.getProperty(propertyName);

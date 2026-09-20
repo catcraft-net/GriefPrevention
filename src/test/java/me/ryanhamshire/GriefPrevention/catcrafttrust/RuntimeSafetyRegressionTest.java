@@ -120,6 +120,18 @@ class RuntimeSafetyRegressionTest
     }
 
     @Test
+    void unavailableTrustServicePreventsOwnershipTransferFromOrphaningTemporaryGrants() throws Exception
+    {
+        Claim claim = claim(42L, OWNER);
+        runtime.service().grant(List.of(claim), HELPER.toString(), CatCraftTrustKind.CONTAINER, Duration.ofDays(1));
+        runtime.service().stop();
+        doCallRealMethod().when(dataStore).changeClaimOwner(eq(claim), any(UUID.class));
+        assertThrows(DataStore.NoTransferException.class, () -> dataStore.changeClaimOwner(claim, UUID.randomUUID()));
+        assertEquals(OWNER, claim.getOwnerID());
+        assertNotNull(claim.checkPermission(HELPER, ClaimPermission.Inventory, null));
+    }
+
+    @Test
     void expiryAlsoPreservesManagerGrantedAfterTheTemporaryPermission() throws Exception
     {
         Claim claim = claim(42L, OWNER);

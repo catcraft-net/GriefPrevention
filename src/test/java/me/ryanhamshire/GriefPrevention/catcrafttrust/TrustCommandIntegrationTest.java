@@ -73,6 +73,7 @@ class TrustCommandIntegrationTest
         command = mock(Command.class);
         Claim claim = mockClaim(42L);
 
+        when(plugin.getLogger()).thenReturn(java.util.logging.Logger.getLogger("TrustCommandIntegrationTest"));
         plugin.dataStore = dataStore;
         plugin.catCraftTrustService = service;
         plugin.config_catCraftTrustMaximumDuration = MAXIMUM;
@@ -92,6 +93,35 @@ class TrustCommandIntegrationTest
     {
         if (bukkit != null) bukkit.close();
         GriefPrevention.instance = previousInstance;
+    }
+
+    @Test
+    void unavailableServiceReportsFailureForPermanentTrustAndUntrust()
+    {
+        when(service.isStarted()).thenReturn(false);
+        for (String name : List.of("trust", "untrust"))
+        {
+            clearInvocations(player);
+            when(command.getName()).thenReturn(name);
+            assertTrue(plugin.onCommand(player, command, name, new String[]{"public"}));
+            verify(player).sendMessage(argThat((String message) -> message.contains("unavailable")));
+            verify(player, never()).sendMessage(argThat((String message) -> message.contains("now has")));
+        }
+    }
+
+    @Test
+    void untrustSaveFailureReportsUnavailableBeforeSendingSuccess()
+    {
+        Claim claim = mockClaim(62L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(claim);
+        when(command.getName()).thenReturn("untrust");
+        org.mockito.Mockito.doThrow(new IllegalStateException("save failed")).when(dataStore).saveClaim(claim);
+        try (var messages = mockStatic(GriefPrevention.class, org.mockito.Mockito.CALLS_REAL_METHODS))
+        {
+            assertTrue(plugin.onCommand(player, command, "untrust", new String[]{"public"}));
+            messages.verify(() -> GriefPrevention.sendMessage(eq(player), eq(TextMode.Success), any(Messages.class), any(String[].class)), never());
+            verify(player).sendMessage(argThat((String message) -> message.contains("unavailable")));
+        }
     }
 
     @Test
