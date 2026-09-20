@@ -38,6 +38,23 @@ class ClaimSaveFailureTest
         assertThrows(RuntimeException.class, () -> store.saveClaim(claim(42L)));
         verify(connection, never()).setAutoCommit(true);
         assertNull(field.get(store));
+        for (String name : java.util.List.of("userName", "password", "databaseUrl"))
+        {
+            var setting = DatabaseDataStore.class.getDeclaredField(name);
+            setting.setAccessible(true);
+            setting.set(store, "test");
+        }
+        Connection recovered = mock(Connection.class);
+        when(recovered.prepareStatement(anyString())).thenThrow(new SQLException("stop after reconnect"));
+        try (var driver = mockStatic(java.sql.DriverManager.class);
+             var logging = mockStatic(GriefPrevention.class))
+        {
+            driver.when(() -> java.sql.DriverManager.getConnection(eq("test"), any(java.util.Properties.class)))
+                    .thenReturn(recovered);
+            assertDoesNotThrow(() -> store.overrideSavePlayerData(java.util.UUID.randomUUID(), new PlayerData()));
+            verify(recovered).prepareStatement(anyString());
+            assertSame(recovered, field.get(store));
+        }
     }
 
     @Test
