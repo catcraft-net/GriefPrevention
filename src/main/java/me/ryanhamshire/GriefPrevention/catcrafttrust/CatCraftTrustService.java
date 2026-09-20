@@ -720,6 +720,7 @@ public final class CatCraftTrustService
         for (String key : keys)
         {
             if (!store.hasTransition(key)) continue;
+            claimAccess.save(claimIdFromKey(key));
             store.completeTransition(key);
             changed = true;
         }
@@ -1037,10 +1038,13 @@ public final class CatCraftTrustService
             TrustDimension dimension = dimensionFromKey(transition.key());
             if (matchesRecordState(current, transition.intendedState(), dimension))
             {
+                // Reload may see an in-memory restoration whose earlier native save failed.
+                claimAccess.save(snapshot.claimId());
                 store.completeTransition(transition.key());
             }
             else if (matchesRecordState(current, transition.precedingState(), dimension))
             {
+                claimAccess.save(snapshot.claimId());
                 store.abortTransition(transition.key());
             }
             else

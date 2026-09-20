@@ -410,17 +410,34 @@ public class DatabaseDataStore extends DataStore
         try
         {
             this.refreshDataConnection();
-
-            //wipe out any existing data about this claim
-            this.deleteClaimFromSecondaryStorage(claim);
-
-            //write claim data to the database
-            this.writeClaimData(claim);
+            if (!databaseConnection.getAutoCommit())
+                throw new SQLException("Cannot save claim inside an existing transaction");
+            databaseConnection.setAutoCommit(false);
+            try
+            {
+                // Both statements must succeed before the trust journal can acknowledge the save.
+                try (PreparedStatement delete = databaseConnection.prepareStatement(SQL_DELETE_CLAIM))
+                {
+                    delete.setLong(1, claim.id);
+                    delete.executeUpdate();
+                }
+                this.writeClaimData(claim);
+                databaseConnection.commit();
+            }
+            catch (SQLException | RuntimeException failure)
+            {
+                try { databaseConnection.rollback(); }
+                catch (SQLException rollbackFailure) { failure.addSuppressed(rollbackFailure); }
+                throw failure;
+            }
+            finally
+            {
+                databaseConnection.setAutoCommit(true);
+            }
         }
-        catch (SQLException e)
+        catch (SQLException failure)
         {
-            GriefPrevention.AddLogEntry("Unable to save data for claim at " + this.locationToString(claim.lesserBoundaryCorner) + ".  Details:");
-            GriefPrevention.AddLogEntry(e.getMessage());
+            throw new IllegalStateException("Could not save claim " + claim.id, failure);
         }
     }
 
@@ -460,11 +477,6 @@ public class DatabaseDataStore extends DataStore
             insertStmt.setBoolean(9, inheritNothing);
             insertStmt.setLong(10, parentId);
             insertStmt.executeUpdate();
-        }
-        catch (SQLException e)
-        {
-            GriefPrevention.AddLogEntry("Unable to save data for claim at " + this.locationToString(claim.lesserBoundaryCorner) + ".  Details:");
-            GriefPrevention.AddLogEntry(e.getMessage());
         }
     }
 
