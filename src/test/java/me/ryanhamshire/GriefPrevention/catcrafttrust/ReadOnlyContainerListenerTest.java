@@ -178,6 +178,27 @@ class ReadOnlyContainerListenerTest
     }
 
     @ParameterizedTest
+    @EnumSource(value = InventoryType.class, names = {"WORKBENCH", "ANVIL", "ENCHANTING", "GRINDSTONE", "LOOM", "CARTOGRAPHY", "STONECUTTER", "SMITHING"})
+    void safeBuilderCanOpenTransientWorkstations(InventoryType type)
+    {
+        Inventory workstation = mock(Inventory.class);
+        when(workstation.getType()).thenReturn(type);
+        InventoryOpenEvent event = new InventoryOpenEvent(view(workstation));
+        listener.onInventoryOpen(event);
+        assertFalse(event.isCancelled());
+    }
+
+    @Test
+    void realStorageAccessFailsClosedWhenClaimLookupThrows()
+    {
+        when(dataStore.getClaimAt(any(Location.class), eq(true), isNull())).thenThrow(new IllegalStateException("lookup failed"));
+        InventoryClickEvent event = new InventoryClickEvent(view(source),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
+        listener.onInventoryClick(event);
+        assertTrue(event.isCancelled());
+    }
+
+    @ParameterizedTest
     @EnumSource(ClickType.class)
     void realContainerClicksAreDeniedAfterPermissionIsLostIncludingBottomSlots(ClickType click)
     {

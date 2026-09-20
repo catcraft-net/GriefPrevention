@@ -26,6 +26,29 @@ class CatCraftTrustRuntimeTest
     Path directory;
 
     @Test
+    void permanentBuildRecordsDoNotProduceTemporaryGrantRollbackWarning() throws Exception
+    {
+        GriefPrevention plugin = mock(GriefPrevention.class);
+        DataStore dataStore = mock(DataStore.class);
+        Server server = mock(Server.class);
+        Logger logger = mock(Logger.class);
+        when(plugin.getServer()).thenReturn(server);
+        when(plugin.getLogger()).thenReturn(logger);
+        when(server.getPluginManager()).thenReturn(mock(PluginManager.class));
+        when(server.getScheduler()).thenReturn(mock(BukkitScheduler.class));
+        me.ryanhamshire.GriefPrevention.Claim claim = mock(me.ryanhamshire.GriefPrevention.Claim.class);
+        claim.managers = new java.util.ArrayList<>();
+        when(claim.getID()).thenReturn(42L);
+        when(dataStore.getClaim(42L)).thenReturn(claim);
+        CatCraftTrustRuntime runtime = CatCraftTrustRuntime.start(plugin, dataStore,
+                CatCraftTrustSettings.bounded(true, 30, 100, 100, 3),
+                directory.resolve("warning.properties"), directory.resolve("missing.properties"));
+        runtime.service().grant(java.util.List.of(claim), "public", CatCraftTrustKind.BUILD, null);
+        runtime.stop();
+        org.mockito.Mockito.verify(logger, org.mockito.Mockito.never()).warning(org.mockito.ArgumentMatchers.anyString());
+    }
+
+    @Test
     void startsRegistersListenerAndStopsWithDurableEmptyState() throws Exception
     {
         GriefPrevention plugin = mock(GriefPrevention.class);

@@ -111,20 +111,28 @@ public final class CatCraftTrustRuntime
     {
         if (stopped) return;
         stopped = true;
-        List<TemporaryTrustRecord> active = service.recordsSnapshot();
+        List<TemporaryTrustRecord> active = service.recordsSnapshot().stream()
+                .filter(record -> record.expiresAtMillis() > 0L)
+                .toList();
         if (!active.isEmpty())
         {
             plugin.getLogger().warning("CatCraft trust state still contains " + active.size()
                     + " active record(s). Do not downgrade to an older GriefPrevention JAR until these grants are removed or expired.");
         }
-        HandlerList.unregisterAll(containerListener);
         try
         {
-            containerListener.shutdown();
+            HandlerList.unregisterAll(containerListener);
         }
         finally
         {
-            service.stop();
+            try
+            {
+                containerListener.shutdown();
+            }
+            finally
+            {
+                service.stop();
+            }
         }
     }
 

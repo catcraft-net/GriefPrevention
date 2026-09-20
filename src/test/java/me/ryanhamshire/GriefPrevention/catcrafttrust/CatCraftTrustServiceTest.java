@@ -35,6 +35,31 @@ class CatCraftTrustServiceTest
     Path directory;
 
     @Test
+    void replacementPreservesCurrentOrthogonalDimensionAndHistoricalBaseline() throws Exception
+    {
+        RawNativeAccess access = rawAccess(42L, OWNER, NONE);
+        AtomicLong now = new AtomicLong(1000L);
+        CatCraftTrustService service = new CatCraftTrustService(new CatCraftTrustStateStore(
+                directory.resolve("orthogonal.properties"), 10), access, new FakeScheduler(), now::get, 10);
+        Claim claim = claim(42L, OWNER);
+        service.start();
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofSeconds(1));
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, null);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofSeconds(1));
+        now.set(2000L);
+        service.processDue(now.get());
+        assertEquals(new NativeTrustState(null, true, false), access.state(42L, TARGET, TrustDimension.PERMISSION));
+        service.revoke(List.of(claim), TARGET);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, Duration.ofSeconds(1));
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, null);
+        service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, Duration.ofSeconds(1));
+        now.set(3000L);
+        service.processDue(now.get());
+        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+                access.state(42L, TARGET, TrustDimension.PERMISSION));
+    }
+
+    @Test
     void backupRetainsPreparedGrantWhenPrimaryIsLostAfterNativeWrite() throws Exception
     {
         Path file = directory.resolve("prepared-backup.properties");

@@ -211,7 +211,7 @@ public final class CatCraftTrustService
                     previousRecord.orElse(null));
             NativeTrustState baseline = previousRecord.isPresent()
                     && matchesRecordState(current, previousRecord.get().expectedState(), dimension)
-                    ? replacementBaseline(previousRecord.get()) : current;
+                    ? alignBaseline(replacementBaseline(previousRecord.get()), current, dimension) : current;
             NativeTrustState expected = desiredState(kind, current);
             TemporaryTrustRecord precedingRecord = previousRecord.isPresent()
                     && matchesRecordState(current, previousRecord.get().expectedState(), dimension)
@@ -1244,6 +1244,14 @@ public final class CatCraftTrustService
     private static TrustDimension dimensionFor(CatCraftTrustKind kind)
     {
         return kind == CatCraftTrustKind.MANAGE ? TrustDimension.MANAGER : TrustDimension.PERMISSION;
+    }
+
+    private static NativeTrustState alignBaseline(NativeTrustState baseline, NativeTrustState current,
+                                                   TrustDimension dimension)
+    {
+        return dimension == TrustDimension.PERMISSION
+                ? new NativeTrustState(baseline.permission(), current.manager(), baseline.safeBuild())
+                : new NativeTrustState(current.permission(), baseline.manager(), current.safeBuild());
     }
 
     private static NativeTrustState replacementBaseline(TemporaryTrustRecord previous)

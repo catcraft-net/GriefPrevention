@@ -2941,9 +2941,9 @@ public class GriefPrevention extends JavaPlugin
             {
                 this.catCraftTrustRuntime.stop();
             }
-            catch (IOException failure)
+            catch (IOException | RuntimeException failure)
             {
-                this.getLogger().log(Level.SEVERE, "Could not save CatCraft trust state during shutdown.", failure);
+                this.getLogger().log(Level.SEVERE, "Could not shut down CatCraft trust cleanly.", failure);
             }
             finally
             {

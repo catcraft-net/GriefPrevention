@@ -4,7 +4,6 @@ import org.bukkit.Server;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -39,12 +38,6 @@ class TrustTabCompletionIntegrationTest
         plugin.config_catCraftTrustMaximumDuration = Duration.ofDays(2);
         doCallRealMethod().when(plugin).onTabComplete(any(), any(), anyString(), any());
         when(plugin.getServer()).thenReturn(server);
-    }
-
-    @AfterEach
-    void tearDown()
-    {
-        GriefPrevention.instance = null;
     }
 
     @Test

@@ -298,7 +298,9 @@ public final class ReadOnlyContainerListener implements Listener
 
     private boolean inventoryPermissionAt(Location location, Player player, Event event)
     {
-        Claim claim = claimAt(location);
+        GriefPrevention instance = GriefPrevention.instance;
+        if (instance == null || instance.dataStore == null) return false;
+        Claim claim = instance.dataStore.getClaimAt(location, true, null);
         return claim == null || claim.checkPermission(player, ClaimPermission.Inventory, event) == null;
     }
 
@@ -908,6 +910,11 @@ public final class ReadOnlyContainerListener implements Listener
         return holder instanceof SessionHolder sessionHolder ? sessionHolder : null;
     }
 
+    private static final java.util.Set<InventoryType> NON_STORAGE_TYPES = java.util.EnumSet.of(
+            InventoryType.WORKBENCH, InventoryType.ANVIL, InventoryType.ENCHANTING,
+            InventoryType.GRINDSTONE, InventoryType.LOOM, InventoryType.CARTOGRAPHY,
+            InventoryType.STONECUTTER, InventoryType.SMITHING);
+
     private static boolean isPotentialStorage(Inventory inventory, InventoryHolder holder)
     {
         if (holder instanceof HumanEntity || holder instanceof Merchant) return true;
@@ -915,7 +922,8 @@ public final class ReadOnlyContainerListener implements Listener
         try
         {
             InventoryType type = inventory == null ? null : inventory.getType();
-            return type != null && type != InventoryType.PLAYER && type != InventoryType.CRAFTING;
+            return type != null && type != InventoryType.PLAYER && type != InventoryType.CRAFTING
+                    && !NON_STORAGE_TYPES.contains(type);
         }
         catch (RuntimeException failure)
         {
