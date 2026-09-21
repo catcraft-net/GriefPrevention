@@ -25,6 +25,7 @@ import com.griefprevention.metrics.MetricsHandler;
 import com.griefprevention.protection.InteractionProtectionHandler;
 import com.griefprevention.protection.ProtectionHelper;
 import me.ryanhamshire.GriefPrevention.DataStore.NoTransferException;
+import me.ryanhamshire.GriefPrevention.catcraftmap.CatCraftMapProtectionListener;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftMessages;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustCommandSupport;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftTrustKind;
@@ -417,6 +418,9 @@ public class GriefPrevention extends JavaPlugin
 
         //special interaction-related events
         pluginManager.registerEvents(new InteractionProtectionHandler(), this);
+
+        //CatCraft map ownership and trademark reminders
+        pluginManager.registerEvents(new CatCraftMapProtectionListener(this, this.dataStore), this);
 
         //cache offline players
         OfflinePlayer[] offlinePlayers = this.getServer().getOfflinePlayers();
