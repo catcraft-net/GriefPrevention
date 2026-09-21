@@ -4,6 +4,7 @@ import me.ryanhamshire.GriefPrevention.Claim;
 import me.ryanhamshire.GriefPrevention.DataStore;
 import me.ryanhamshire.GriefPrevention.GriefPrevention;
 import org.bukkit.ChatColor;
+import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Server;
@@ -74,6 +75,7 @@ class CatCraftMapProtectionListenerTest
         when(player.getLocation()).thenReturn(location);
         when(player.getInventory()).thenReturn(inventory);
         when(player.isOnline()).thenReturn(true);
+        when(player.getGameMode()).thenReturn(GameMode.SURVIVAL);
         when(inventory.getContents()).thenReturn(new ItemStack[0]);
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getLogger()).thenReturn(mock(Logger.class));
@@ -167,10 +169,15 @@ class CatCraftMapProtectionListenerTest
     {
         Claim claim = claimOwnedBy(playerId);
         when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
+        when(player.getGameMode()).thenReturn(GameMode.CREATIVE);
+        ItemStack emptyMapBefore = item(Material.MAP, 1);
+        ItemStack emptyMapAfter = item(Material.MAP, 1);
         ItemStack filledMap = mock(ItemStack.class);
         when(filledMap.getType()).thenReturn(Material.FILLED_MAP);
         when(filledMap.getAmount()).thenReturn(1);
-        when(inventory.getContents()).thenReturn(new ItemStack[0], new ItemStack[]{filledMap});
+        when(inventory.getContents()).thenReturn(
+                new ItemStack[]{emptyMapBefore},
+                new ItemStack[]{emptyMapAfter, filledMap});
         PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_AIR, EquipmentSlot.OFF_HAND, Material.MAP);
 
         listener.onMapFillAttempt(event);
@@ -180,6 +187,45 @@ class CatCraftMapProtectionListenerTest
         assertEquals(1, scheduled.size());
         scheduled.getFirst().run();
         verify(player).sendMessage(TRADEMARK_MESSAGE);
+    }
+
+    @Test
+    void reminderIsSentWhenStackedEmptyMapIsConsumedAndFilledMapIsDropped()
+    {
+        Claim claim = claimOwnedBy(playerId);
+        when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
+        ItemStack twoEmptyMaps = item(Material.MAP, 2);
+        ItemStack oneEmptyMap = item(Material.MAP, 1);
+        when(inventory.getContents()).thenReturn(
+                new ItemStack[]{twoEmptyMaps},
+                new ItemStack[]{oneEmptyMap});
+        PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_AIR, EquipmentSlot.HAND, Material.MAP);
+
+        listener.onMapFillAttempt(event);
+        listener.onMapFillComplete(event);
+        scheduled.getFirst().run();
+
+        verify(player).sendMessage(TRADEMARK_MESSAGE);
+    }
+
+    @Test
+    void unrelatedFilledMapPickupDoesNotTriggerReminder()
+    {
+        Claim claim = claimOwnedBy(playerId);
+        when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
+        ItemStack emptyMapBefore = item(Material.MAP, 1);
+        ItemStack emptyMapAfter = item(Material.MAP, 1);
+        ItemStack unrelatedFilledMap = item(Material.FILLED_MAP, 1);
+        when(inventory.getContents()).thenReturn(
+                new ItemStack[]{emptyMapBefore},
+                new ItemStack[]{emptyMapAfter, unrelatedFilledMap});
+        PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_BLOCK, EquipmentSlot.HAND, Material.MAP);
+
+        listener.onMapFillAttempt(event);
+        listener.onMapFillComplete(event);
+        scheduled.getFirst().run();
+
+        verify(player, never()).sendMessage(TRADEMARK_MESSAGE);
     }
 
     @Test
@@ -216,6 +262,14 @@ class CatCraftMapProtectionListenerTest
         Claim claim = mock(Claim.class);
         when(claim.getOwnerID()).thenReturn(ownerId);
         return claim;
+    }
+
+    private ItemStack item(Material material, int amount)
+    {
+        ItemStack item = mock(ItemStack.class);
+        when(item.getType()).thenReturn(material);
+        when(item.getAmount()).thenReturn(amount);
+        return item;
     }
 
     private PlayerInteractEvent mapEvent(Action action, EquipmentSlot hand, Material material)
