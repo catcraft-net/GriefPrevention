@@ -569,24 +569,34 @@ public class FlatFileDataStore extends DataStore
     @Override
     synchronized void writeClaimToStorage(Claim claim)
     {
-        String claimID = String.valueOf(claim.id);
-
-        String yaml = this.getYamlForClaim(claim);
-
+        java.nio.file.Path destination = java.nio.file.Path.of(claimDataFolderPath, claim.id + ".yml");
+        java.nio.file.Path temporary = null;
         try
         {
-            //open the claim's file
-            File claimFile = new File(claimDataFolderPath + File.separator + claimID + ".yml");
-            claimFile.createNewFile();
-            Files.write(yaml.getBytes(StandardCharsets.UTF_8), claimFile);
+            byte[] yaml = this.getYamlForClaim(claim).getBytes(StandardCharsets.UTF_8);
+            temporary = java.nio.file.Files.createTempFile(destination.getParent(), claim.id + "-", ".tmp");
+            try (java.nio.channels.FileChannel channel = java.nio.channels.FileChannel.open(temporary,
+                    java.nio.file.StandardOpenOption.WRITE))
+            {
+                java.nio.ByteBuffer bytes = java.nio.ByteBuffer.wrap(yaml);
+                while (bytes.hasRemaining()) channel.write(bytes);
+                channel.force(true);
+            }
+            java.nio.file.Files.move(temporary, destination,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
         }
-
-        //if any problem, log it
-        catch (Exception e)
+        catch (java.io.IOException failure)
         {
-            StringWriter errors = new StringWriter();
-            e.printStackTrace(new PrintWriter(errors));
-            GriefPrevention.AddLogEntry(claimID + " " + errors, CustomLogEntryTypes.Exception);
+            throw new java.io.UncheckedIOException("Could not save claim " + claim.id, failure);
+        }
+        finally
+        {
+            if (temporary != null)
+            {
+                try { java.nio.file.Files.deleteIfExists(temporary); }
+                catch (java.io.IOException ignored) { }
+            }
         }
     }
 

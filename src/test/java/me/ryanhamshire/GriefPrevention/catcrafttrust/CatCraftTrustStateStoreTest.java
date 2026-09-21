@@ -1,0 +1,263 @@
+package me.ryanhamshire.GriefPrevention.catcrafttrust;
+
+import me.ryanhamshire.GriefPrevention.ClaimPermission;
+import org.bukkit.entity.Player;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.List;
+import java.util.Optional;
+import java.util.Base64;
+import java.util.Properties;
+import java.util.UUID;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+class CatCraftTrustStateStoreTest
+{
+    private static final UUID OWNER = UUID.fromString("16f54277-9f89-4d94-9f78-c876845219d7");
+    private static final UUID TARGET = UUID.fromString("85801356-29c3-4f1f-b363-3114641675b1");
+    private static final NativeTrustState NONE = new NativeTrustState(null, false, false);
+    private static final NativeTrustState ACCESS = new NativeTrustState(ClaimPermission.Access, false, false);
+    private static final NativeTrustState SAFE_BUILD = new NativeTrustState(ClaimPermission.Access, false, true);
+
+    @TempDir
+    Path directory;
+
+    @Test
+    void malformedUnicodePrimaryUsesValidBackupAndCanBeRepaired() throws Exception
+    {
+        Path file = directory.resolve("unicode.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord record = record(42L, "public", 2000L, 1L);
+        store.put(record);
+        store.save();
+        store.save();
+        Files.writeString(file, "version=" + (char) 92 + "u12");
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+        assertEquals(List.of(record), recovered.values());
+        recovered.save();
+        CatCraftTrustStateStore repaired = new CatCraftTrustStateStore(file, 10);
+        repaired.load();
+        assertEquals(List.of(record), repaired.values());
+    }
+
+    @Test
+    void roundTripsRecordsAndIndexesCaseInsensitiveTargets() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        CatCraftTrustStateStore first = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord record = record(42L, TARGET.toString().toUpperCase(), 1_700_000_000_000L, 1L);
+
+        first.put(record);
+        first.save();
+
+        CatCraftTrustStateStore second = new CatCraftTrustStateStore(file, 10);
+        second.load();
+
+        assertEquals(Optional.of(record), second.get(record.key()));
+        assertEquals(List.of(record), second.forClaim(42L));
+        assertEquals(List.of(record), second.values());
+        assertTrue(second.hasAnySafeBuildRecords());
+        assertTrue(second.hasSafeBuildRecord(42L));
+        assertFalse(second.hasSafeBuildRecord(43L));
+        assertEquals(record, second.findSafeBuild(42L, TARGET, null,
+                1_699_999_999_999L, OWNER).orElseThrow());
+    }
+
+    @Test
+    void findsPublicAndPermissionNodeSafeBuildTargets()
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("state"), 10);
+        store.put(record(42L, "public", 0L, 1L));
+        store.put(record(42L, "[catcraft.builders]", 0L, 2L));
+
+        Player player = mock(Player.class);
+        when(player.hasPermission("catcraft.builders")).thenReturn(true);
+
+        assertTrue(store.findSafeBuild(42L, null, null, System.currentTimeMillis(), OWNER).isPresent());
+        store.removeTarget(42L, "public", TrustDimension.PERMISSION);
+        assertTrue(store.findSafeBuild(42L, null, player, System.currentTimeMillis(), OWNER).isPresent());
+        assertTrue(store.findSafeBuild(42L, null, null, System.currentTimeMillis(), OWNER).isEmpty());
+    }
+
+    @Test
+    void replacesExistingKeysButRejectsNewRecordsAfterConfiguredBound()
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("state"), 1);
+        TemporaryTrustRecord first = record(42L, "target", 0L, 1L);
+        TemporaryTrustRecord replacement = record(42L, "TARGET", 0L, 2L);
+        store.put(first);
+        store.put(replacement);
+
+        assertEquals(1, store.size());
+        assertTrue(store.hasAnySafeBuildRecords());
+        assertEquals(Optional.of(replacement), store.get(first.key()));
+        assertThrows(IllegalStateException.class, () -> store.put(record(43L, "other", 0L, 3L)));
+        store.remove(replacement.key());
+        assertFalse(store.hasAnySafeBuildRecords());
+    }
+
+    @Test
+    void ordersExpirationQueueAndRemovesOnlyMatchingRevision()
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("state"), 10);
+        TemporaryTrustRecord later = record(42L, "later", 200L, 2L);
+        TemporaryTrustRecord sooner = record(42L, "sooner", 100L, 1L);
+        store.put(later);
+        store.put(sooner);
+
+        assertEquals(sooner, store.nextExpiring().orElseThrow());
+        assertTrue(store.removeIfRevision(sooner.key(), later.revision()).isEmpty());
+        assertEquals(Optional.of(sooner), store.removeIfRevision(sooner.key(), sooner.revision()));
+        assertEquals(later, store.nextExpiring().orElseThrow());
+    }
+
+    @Test
+    void recoversFromBackupAndRejectsWhenBothCopiesAreCorrupt() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(record(42L, "first", 0L, 1L));
+        store.save();
+        store.put(record(42L, "second", 0L, 2L));
+        store.save();
+
+        Files.writeString(file, "not a properties file");
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+        assertEquals(List.of(record(42L, "first", 0L, 1L)), recovered.forClaim(42L));
+
+        Files.writeString(file.resolveSibling("temporary-trust.properties.bak"), "also corrupt");
+        assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 10).load());
+    }
+
+    @Test
+    void leavesNoTemporaryFileAfterAtomicSave() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(record(42L, "target", 0L, 1L));
+        store.save();
+
+        assertTrue(Files.isRegularFile(file));
+        assertFalse(Files.exists(file.resolveSibling("temporary-trust.properties.tmp")));
+    }
+
+    @Test
+    void expirationQueueRemainsBoundedAcrossReplacementAndRemoval()
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("state"), 1);
+        for (int revision = 1; revision <= 20; revision++)
+        {
+            store.put(record(42L, "target", revision, revision));
+            assertEquals(1, store.expirationQueueSize());
+        }
+
+        store.removeClaim(42L);
+        assertEquals(0, store.expirationQueueSize());
+    }
+
+    @Test
+    void selectsOneOrderedDueBatchWithoutChangingExpirationQueue() throws Exception
+    {
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(directory.resolve("due-batch-state"), 10_000);
+        for (int index = 0; index < 10_000; index++)
+        {
+            store.put(record(42L, "target-" + index, index < 1_000 ? 100L + index : 10_000L + index,
+                    index + 1L));
+        }
+
+        List<TemporaryTrustRecord> due = store.dueExpiring(2_000L, 1_000);
+
+        assertEquals(1_000, due.size());
+        assertEquals("target-0", due.get(0).target());
+        assertEquals("target-999", due.get(999).target());
+        assertEquals(10_000, store.expirationQueueSize());
+        assertEquals(10_000, store.size());
+    }
+
+    @Test
+    void backupRecoveryDoesNotCopyCorruptPrimaryOverValidBackup() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        store.put(record(42L, "first", 0L, 1L));
+        store.save();
+        store.put(record(42L, "second", 0L, 2L));
+        store.save();
+
+        Files.writeString(file, "corrupt primary");
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+        recovered.put(record(42L, "third", 0L, 3L));
+        recovered.save();
+        Files.writeString(file, "corrupt again");
+
+        CatCraftTrustStateStore afterSecondFailure = new CatCraftTrustStateStore(file, 10);
+        afterSecondFailure.load();
+        assertEquals(List.of(record(42L, "first", 0L, 1L)),
+                afterSecondFailure.forClaim(42L));
+    }
+
+    @Test
+    void rejectsUnknownKeysAndOversizedFilesBeforeLoadingProperties() throws Exception
+    {
+        Path file = directory.resolve("temporary-trust.properties");
+        Files.writeString(file, "version=2\ncount=0\nunknown=1\n");
+        assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 1).load());
+
+        String oversized = "version=2\ncount=0\nrecord.0="
+                + "x".repeat(2_000_000) + "\n";
+        Files.writeString(file, oversized, StandardCharsets.UTF_8);
+        assertThrows(IOException.class, () -> new CatCraftTrustStateStore(file, 1).load());
+    }
+
+    @Test
+    void malformedTransitionKeyFallsBackToValidBackup() throws Exception
+    {
+        Path file = directory.resolve("malformed-transition.properties");
+        CatCraftTrustStateStore store = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord valid = record(42L, "target", 0L, 1L);
+        store.put(valid);
+        store.save();
+        store.put(record(43L, "other", 0L, 2L));
+        store.save();
+
+        Properties corrupt = new Properties();
+        corrupt.setProperty("version", "2");
+        corrupt.setProperty("count", "0");
+        corrupt.setProperty("transition.count", "1");
+        String malformedKey = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("not-a-transition-key".getBytes(StandardCharsets.UTF_8));
+        String transition = String.join("|", malformedKey, "-", "-,false,false",
+                "-", "-,false,false");
+        corrupt.setProperty("transition.0", Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(transition.getBytes(StandardCharsets.UTF_8)));
+        try (var writer = Files.newBufferedWriter(file, StandardCharsets.UTF_8))
+        {
+            corrupt.store(writer, "corrupt primary");
+        }
+
+        CatCraftTrustStateStore recovered = new CatCraftTrustStateStore(file, 10);
+        recovered.load();
+
+        assertEquals(List.of(valid), recovered.forClaim(42L));
+    }
+
+    private static TemporaryTrustRecord record(long claimId, String target, long expiresAtMillis, long revision)
+    {
+        return new TemporaryTrustRecord(claimId, target, CatCraftTrustKind.BUILD,
+                TrustDimension.PERMISSION, NONE, SAFE_BUILD, expiresAtMillis, revision, OWNER);
+    }
+}

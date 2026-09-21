@@ -20,8 +20,13 @@ commands:
       permission: griefprevention.abandonallclaims
     trust:
       description: Grants a player full access to your claim(s).
-      usage: /<command> <player>  Grants a player permission to build.  See also /untrust, /containertrust, /accesstrust, and /permissiontrust.
+      usage: /<command> <player> [time]
       aliases: tr
+      permission: griefprevention.claims
+    buildtrust:
+      description: Lets a player build and look inside containers without moving items.
+      usage: /<command> <player> [time]
+      aliases: bt
       permission: griefprevention.claims
     untrust:
       description: Revokes a player's access to your claim(s).
@@ -30,17 +35,17 @@ commands:
       permission: griefprevention.claims
     containertrust:
       description: Grants a player access to your claim's containers, crops, animals, bed, buttons, and levers.
-      usage: /<command> <player>.  Grants a player access to your inventory, crops, animals, bed, and buttons/levers.
+      usage: /<command> <player> [time]
       aliases: ct
       permission: griefprevention.claims
     accesstrust:
       description: Grants a player entry to your claim(s) and use of your bed, buttons, and levers.
-      usage: /<command> <player>.  Grants a player access to your bed, buttons, and levers.
+      usage: /<command> <player> [time]
       aliases: at
       permission: griefprevention.claims
     permissiontrust:
       description: Grants a player permission to manage the claim trustlist.
-      usage: /<command> <player>.  Permits a player to /trust and /untrust players in the claim.
+      usage: /<command> <player> [time]
       aliases: [pt, managetrust]
       permission: griefprevention.claims
     subdivideclaims:
