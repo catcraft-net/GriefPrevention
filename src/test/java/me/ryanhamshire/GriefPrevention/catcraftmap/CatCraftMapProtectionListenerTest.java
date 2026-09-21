@@ -8,6 +8,7 @@ import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Server;
+import org.bukkit.Statistic;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -17,7 +18,6 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.inventory.EquipmentSlot;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
 import org.junit.jupiter.api.BeforeEach;
@@ -55,7 +55,6 @@ class CatCraftMapProtectionListenerTest
     private GriefPrevention plugin;
     private DataStore dataStore;
     private Player player;
-    private PlayerInventory inventory;
     private Location location;
     private CatCraftMapProtectionListener listener;
 
@@ -65,7 +64,6 @@ class CatCraftMapProtectionListenerTest
         plugin = mock(GriefPrevention.class);
         dataStore = mock(DataStore.class);
         player = mock(Player.class);
-        inventory = mock(PlayerInventory.class);
         World world = mock(World.class);
         Server server = mock(Server.class);
         BukkitScheduler scheduler = mock(BukkitScheduler.class);
@@ -73,10 +71,8 @@ class CatCraftMapProtectionListenerTest
 
         when(player.getUniqueId()).thenReturn(playerId);
         when(player.getLocation()).thenReturn(location);
-        when(player.getInventory()).thenReturn(inventory);
         when(player.isOnline()).thenReturn(true);
         when(player.getGameMode()).thenReturn(GameMode.SURVIVAL);
-        when(inventory.getContents()).thenReturn(new ItemStack[0]);
         when(plugin.getServer()).thenReturn(server);
         when(plugin.getLogger()).thenReturn(mock(Logger.class));
         when(server.getScheduler()).thenReturn(scheduler);
@@ -165,19 +161,11 @@ class CatCraftMapProtectionListenerTest
     }
 
     @Test
-    void reminderIsSentOnNextTickOnlyAfterFilledMapAppears()
+    void reminderIsSentOnNextTickOnlyAfterMapUseStatisticIncreases()
     {
         Claim claim = claimOwnedBy(playerId);
         when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
-        when(player.getGameMode()).thenReturn(GameMode.CREATIVE);
-        ItemStack emptyMapBefore = item(Material.MAP, 1);
-        ItemStack emptyMapAfter = item(Material.MAP, 1);
-        ItemStack filledMap = mock(ItemStack.class);
-        when(filledMap.getType()).thenReturn(Material.FILLED_MAP);
-        when(filledMap.getAmount()).thenReturn(1);
-        when(inventory.getContents()).thenReturn(
-                new ItemStack[]{emptyMapBefore},
-                new ItemStack[]{emptyMapAfter, filledMap});
+        when(player.getStatistic(Statistic.USE_ITEM, Material.MAP)).thenReturn(4, 5);
         PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_AIR, EquipmentSlot.OFF_HAND, Material.MAP);
 
         listener.onMapFillAttempt(event);
@@ -190,15 +178,11 @@ class CatCraftMapProtectionListenerTest
     }
 
     @Test
-    void reminderIsSentWhenStackedEmptyMapIsConsumedAndFilledMapIsDropped()
+    void survivalFullInventoryMapFillStillTriggersReminder()
     {
         Claim claim = claimOwnedBy(playerId);
         when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
-        ItemStack twoEmptyMaps = item(Material.MAP, 2);
-        ItemStack oneEmptyMap = item(Material.MAP, 1);
-        when(inventory.getContents()).thenReturn(
-                new ItemStack[]{twoEmptyMaps},
-                new ItemStack[]{oneEmptyMap});
+        when(player.getStatistic(Statistic.USE_ITEM, Material.MAP)).thenReturn(12, 13);
         PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_AIR, EquipmentSlot.HAND, Material.MAP);
 
         listener.onMapFillAttempt(event);
@@ -209,16 +193,28 @@ class CatCraftMapProtectionListenerTest
     }
 
     @Test
-    void unrelatedFilledMapPickupDoesNotTriggerReminder()
+    void creativeFullInventoryMapFillStillTriggersReminder()
     {
         Claim claim = claimOwnedBy(playerId);
         when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
-        ItemStack emptyMapBefore = item(Material.MAP, 1);
-        ItemStack emptyMapAfter = item(Material.MAP, 1);
-        ItemStack unrelatedFilledMap = item(Material.FILLED_MAP, 1);
-        when(inventory.getContents()).thenReturn(
-                new ItemStack[]{emptyMapBefore},
-                new ItemStack[]{emptyMapAfter, unrelatedFilledMap});
+        when(player.getGameMode()).thenReturn(GameMode.CREATIVE);
+        when(player.getStatistic(Statistic.USE_ITEM, Material.MAP)).thenReturn(20, 21);
+        PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_AIR, EquipmentSlot.HAND, Material.MAP);
+
+        listener.onMapFillAttempt(event);
+        listener.onMapFillComplete(event);
+        scheduled.getFirst().run();
+
+        verify(player).sendMessage(TRADEMARK_MESSAGE);
+    }
+
+    @Test
+    void creativeUnrelatedFilledMapPickupDoesNotTriggerReminder()
+    {
+        Claim claim = claimOwnedBy(playerId);
+        when(dataStore.getClaimAt(location, false, null)).thenReturn(claim);
+        when(player.getGameMode()).thenReturn(GameMode.CREATIVE);
+        when(player.getStatistic(Statistic.USE_ITEM, Material.MAP)).thenReturn(20, 20);
         PlayerInteractEvent event = mapEvent(Action.RIGHT_CLICK_BLOCK, EquipmentSlot.HAND, Material.MAP);
 
         listener.onMapFillAttempt(event);
@@ -262,14 +258,6 @@ class CatCraftMapProtectionListenerTest
         Claim claim = mock(Claim.class);
         when(claim.getOwnerID()).thenReturn(ownerId);
         return claim;
-    }
-
-    private ItemStack item(Material material, int amount)
-    {
-        ItemStack item = mock(ItemStack.class);
-        when(item.getType()).thenReturn(material);
-        when(item.getAmount()).thenReturn(amount);
-        return item;
     }
 
     private PlayerInteractEvent mapEvent(Action action, EquipmentSlot hand, Material material)

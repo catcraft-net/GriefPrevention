@@ -5,8 +5,8 @@ import me.ryanhamshire.GriefPrevention.DataStore;
 import me.ryanhamshire.GriefPrevention.GriefPrevention;
 import me.ryanhamshire.GriefPrevention.catcrafttrust.CatCraftMessages;
 import org.bukkit.ChatColor;
-import org.bukkit.GameMode;
 import org.bukkit.Material;
+import org.bukkit.Statistic;
 import org.bukkit.entity.Player;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
@@ -66,17 +66,12 @@ public final class CatCraftMapProtectionListener implements Listener
         }
 
         Player player = event.getPlayer();
-        MapCounts before = countMaps(player);
-        boolean creativeMode = player.getGameMode() == GameMode.CREATIVE;
+        int mapUsesBefore = player.getStatistic(Statistic.USE_ITEM, Material.MAP);
         this.plugin.getServer().getScheduler().runTask(this.plugin, () ->
         {
             if (!player.isOnline()) return;
 
-            MapCounts after = countMaps(player);
-            boolean emptyMapConsumed = after.emptyMaps() < before.emptyMaps();
-            boolean creativeMapCreated = creativeMode
-                    && after.filledMaps() > before.filledMaps();
-            if (emptyMapConsumed || creativeMapCreated)
+            if (player.getStatistic(Statistic.USE_ITEM, Material.MAP) > mapUsesBefore)
             {
                 sendMessage(player, CatCraftMessages.mapTrademarkReminder());
             }
@@ -98,35 +93,8 @@ public final class CatCraftMapProtectionListener implements Listener
         sendMessage(player, CatCraftMessages.mapFillOwnerOnly());
     }
 
-    private static MapCounts countMaps(Player player)
-    {
-        int emptyMaps = 0;
-        int filledMaps = 0;
-        ItemStack[] contents = player.getInventory().getContents();
-        if (contents == null) return new MapCounts(0, 0);
-
-        for (ItemStack item : contents)
-        {
-            if (item == null) continue;
-
-            if (item.getType() == Material.MAP)
-            {
-                emptyMaps += item.getAmount();
-            }
-            else if (item.getType() == Material.FILLED_MAP)
-            {
-                filledMaps += item.getAmount();
-            }
-        }
-        return new MapCounts(emptyMaps, filledMaps);
-    }
-
     private static void sendMessage(Player player, String message)
     {
         player.sendMessage(ChatColor.translateAlternateColorCodes('&', message));
-    }
-
-    private record MapCounts(int emptyMaps, int filledMaps)
-    {
     }
 }
