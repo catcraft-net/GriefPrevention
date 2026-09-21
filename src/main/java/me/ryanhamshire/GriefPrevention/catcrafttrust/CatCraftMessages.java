@@ -42,4 +42,14 @@ public final class CatCraftMessages
     {
         return PREFIX + " &a";
     }
+
+    public static String mapFillOwnerOnly()
+    {
+        return PREFIX + " &cYou can only fill a map while standing inside your own claim.";
+    }
+
+    public static String mapTrademarkReminder()
+    {
+        return PREFIX + " &eUse /trademark add while holding this map to prevent copies.";
+    }
 }
