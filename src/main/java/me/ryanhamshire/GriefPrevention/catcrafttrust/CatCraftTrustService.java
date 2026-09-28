@@ -1276,7 +1276,7 @@ public final class CatCraftTrustService
         {
             case BUILD -> new NativeTrustState(ClaimPermission.Access, current.manager(), true);
             case ACCESS -> new NativeTrustState(ClaimPermission.Access, current.manager(), false);
-            case CONTAINER -> new NativeTrustState(ClaimPermission.Inventory, current.manager(), false);
+            case CONTAINER -> new NativeTrustState(ClaimPermission.Container, current.manager(), false);
             case FULL -> new NativeTrustState(ClaimPermission.Build, current.manager(), false);
             case MANAGE -> new NativeTrustState(current.permission(), true, current.safeBuild());
         };

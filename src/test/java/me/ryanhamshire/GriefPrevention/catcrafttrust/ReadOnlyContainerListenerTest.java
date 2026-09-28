@@ -56,6 +56,7 @@ import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,12 @@ import static org.mockito.Mockito.when;
 
 class ReadOnlyContainerListenerTest
 {
+    @BeforeAll
+    static void loadRegistries()
+    {
+        BukkitRegistryBootstrap.initialize();
+    }
+
     private final UUID playerId = UUID.randomUUID();
     private final UUID ownerId = UUID.randomUUID();
     private final UUID worldId = UUID.randomUUID();
@@ -187,7 +194,7 @@ class ReadOnlyContainerListenerTest
         when(top.getLocation()).thenReturn(location);
         if (type == InventoryType.CRAFTING || type == InventoryType.PLAYER || type == InventoryType.CREATIVE || type == InventoryType.WORKBENCH)
             when(top.getHolder()).thenReturn(player);
-        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
                 .thenReturn(() -> "no storage permission");
         InventoryOpenEvent open = new InventoryOpenEvent(view(top));
         listener.onInventoryOpen(open);
@@ -229,7 +236,7 @@ class ReadOnlyContainerListenerTest
     void realContainerClicksAreDeniedAfterPermissionIsLostIncludingBottomSlots(ClickType click)
     {
         when(trusts.isSafeBuilder(claim, playerId, player)).thenReturn(false);
-        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
                 .thenReturn(() -> "trust expired");
         InventoryView open = view(source);
         when(player.getOpenInventory()).thenReturn(open);
@@ -245,7 +252,7 @@ class ReadOnlyContainerListenerTest
     @Test
     void realContainerDragIsDeniedAfterDowngradeToSafeBuild()
     {
-        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
                 .thenReturn(() -> "container trust revoked");
         ItemStack cursor = mock(ItemStack.class);
         InventoryDragEvent event = new InventoryDragEvent(view(source), cursor, cursor, true, java.util.Map.of(0, cursor));
@@ -277,7 +284,7 @@ class ReadOnlyContainerListenerTest
         when(right.getBlock()).thenReturn(rightBlock);
         when(rightBlock.getLocation()).thenReturn(rightLocation);
         when(dataStore.getClaimAt(eq(rightLocation), eq(true), isNull())).thenReturn(denied);
-        when(denied.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+        when(denied.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
                 .thenReturn(() -> "no right-side trust");
         InventoryClickEvent event = new InventoryClickEvent(view(source),
                 InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);
@@ -292,7 +299,7 @@ class ReadOnlyContainerListenerTest
         when(source.getHolder()).thenReturn(cart);
         Location cartLocation = player.getLocation();
         when(cart.getLocation()).thenReturn(cartLocation);
-        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Inventory), any()))
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
                 .thenReturn(() -> "trust revoked");
         InventoryClickEvent event = new InventoryClickEvent(view(source),
                 InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PICKUP_ALL);

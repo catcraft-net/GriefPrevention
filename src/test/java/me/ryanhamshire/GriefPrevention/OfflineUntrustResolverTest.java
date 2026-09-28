@@ -32,7 +32,7 @@ class OfflineUntrustResolverTest
     {
         for (ClaimPermission permission : List.of(
                 ClaimPermission.Build,
-                ClaimPermission.Inventory,
+                ClaimPermission.Container,
                 ClaimPermission.Access))
         {
             Claim claim = new Claim();

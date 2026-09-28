@@ -1,6 +1,6 @@
 # CatCraft Trust Safety fork
 
-This is a command-only CatCraft fork of GriefPrevention 18.0.0. It keeps GriefPrevention as the active protection and persistence system, and adds safe Build Trust plus optional temporary durations directly to the existing trust commands. It contains no trust GUI and must not be installed alongside the former GPTrust add-on or TrustHooks binary patch.
+This is a command-only CatCraft fork of GriefPrevention 18.0.0, kept in sync with upstream `GriefPrevention/GriefPrevention` master. It keeps GriefPrevention as the active protection and persistence system, and adds safe Build Trust plus optional temporary durations directly to the existing trust commands. It contains no trust GUI and must not be installed alongside the former GPTrust add-on or TrustHooks binary patch.
 
 ## Commands and permissions
 
@@ -10,7 +10,7 @@ All trust commands use the existing `griefprevention.claims` permission. Omittin
 - `/accesstrust <target> [duration]` (`/at`) gives normal GriefPrevention Access Trust.
 - `/containertrust <target> [duration]` (`/ct`) gives normal GriefPrevention Container Trust.
 - `/trust <target> [duration]` (`/tr`) gives normal full Build permission.
-- `/permissiontrust <target> [duration]` (`/pt`, `/managetrust`) lets the target manage trusted players while preserving any separate Build Trust marker.
+- `/managetrust <target> [duration]` (`/pt`, `/permissiontrust`) lets the target manage trusted players while preserving any separate Build Trust marker.
 - `/untrust <target>` (`/ut`) and `/untrust all` remove native trust and invalidate matching temporary metadata.
 - `/trustlist` shows each trust level and labels safe Build Trust entries as temporary or forever.
 
@@ -85,3 +85,11 @@ For a controlled rollback, let temporary grants expire or remove affected trust 
 The source suite covers parsing and overflow, permanent-to-temporary restoration, stale timers, replacement grants, untrust invalidation, claim deletion and transfer, restart reconciliation, corrupt primary/backup handling, bounded expiry batches, permission dimensions, command scope and events, online-only completion, inventory mutation routes, storage breaking, special storage, entity storage, indirect automation, session revalidation, and retained-state types.
 
 These automated checks do not replace a staged Paper startup with CatCraft's complete plugin set, Bedrock/Geyser interaction tests, a live TPS/Spark profile, or heap-retention observation. Complete those checks before promoting the JAR to the production network.
+
+## Syncing with upstream
+
+Upstream fixes are merged in regularly (`git fetch upstream && git merge upstream/master` on a `catcraft/upstream-sync-*` branch, then a PR). Deliberate differences to keep when resolving conflicts:
+
+- `Claim.managers` stays a separate list. Upstream (#2618) folded managers into the permission map, where Manage also grants Build; CatCraft keeps manager trust independent so Permission Trust never implies building and never overwrites a safe Build Trust marker.
+- The CatCraft trust command path (`handleTrustCommand` with a `TrustCommandRequest`, and `/untrust` wrapped for persistence failures) replaces upstream's simpler versions of those handlers.
+- `paper-api` is pinned to the 26.x version the server runs instead of upstream's open version range.

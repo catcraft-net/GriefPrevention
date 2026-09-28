@@ -312,7 +312,7 @@ public final class ReadOnlyContainerListener implements Listener
         GriefPrevention instance = GriefPrevention.instance;
         if (instance == null || instance.dataStore == null) return false;
         Claim claim = instance.dataStore.getClaimAt(location, true, null);
-        return claim == null || claim.checkPermission(player, ClaimPermission.Inventory, event) == null;
+        return claim == null || claim.checkPermission(player, ClaimPermission.Container, event) == null;
     }
 
     private void closeRealContainerNextTick(Player player, @Nullable Inventory top)

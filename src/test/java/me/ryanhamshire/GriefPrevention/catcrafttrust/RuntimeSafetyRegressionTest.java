@@ -19,6 +19,7 @@ import org.bukkit.inventory.Inventory;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.scheduler.BukkitTask;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -45,6 +46,12 @@ import static org.mockito.Mockito.*;
 /** Uses the actual runtime adapter and actual Claim objects, not a stand-in adapter. */
 class RuntimeSafetyRegressionTest
 {
+    @BeforeAll
+    static void loadRegistries()
+    {
+        BukkitRegistryBootstrap.initialize();
+    }
+
     private static final UUID OWNER = UUID.fromString("7419db16-37c5-41ef-8fd2-f3b4a2938b35");
     private static final UUID HELPER = UUID.fromString("dbb9f20c-ed34-4f32-ae29-5d2527016c57");
     @TempDir Path directory;
@@ -106,7 +113,7 @@ class RuntimeSafetyRegressionTest
         child.parent = parent;
         parent.children.add(child);
         parent.managers.add(HELPER.toString());
-        child.setPermission(HELPER.toString(), ClaimPermission.Inventory);
+        child.setPermission(HELPER.toString(), ClaimPermission.Container);
         child.managers.add(HELPER.toString());
 
         runtime.service().grant(List.of(parent), HELPER.toString(), kind, Duration.ofMinutes(1));
@@ -115,7 +122,7 @@ class RuntimeSafetyRegressionTest
         assertAll(
                 () -> assertNull(parent.getPermission(HELPER.toString())),
                 () -> assertTrue(parent.managers.contains(HELPER.toString())),
-                () -> assertEquals(ClaimPermission.Inventory, child.getPermission(HELPER.toString())),
+                () -> assertEquals(ClaimPermission.Container, child.getPermission(HELPER.toString())),
                 () -> assertTrue(child.managers.contains(HELPER.toString())));
     }
 
@@ -128,7 +135,7 @@ class RuntimeSafetyRegressionTest
         doCallRealMethod().when(dataStore).changeClaimOwner(eq(claim), any(UUID.class));
         assertThrows(DataStore.NoTransferException.class, () -> dataStore.changeClaimOwner(claim, UUID.randomUUID()));
         assertEquals(OWNER, claim.getOwnerID());
-        assertNotNull(claim.checkPermission(HELPER, ClaimPermission.Inventory, null));
+        assertNotNull(claim.checkPermission(HELPER, ClaimPermission.Container, null));
     }
 
     @Test
@@ -149,13 +156,13 @@ class RuntimeSafetyRegressionTest
     void managerExpiryDoesNotRemoveOrdinaryPermission() throws Exception
     {
         Claim claim = claim(42L, OWNER);
-        claim.setPermission(HELPER.toString(), ClaimPermission.Inventory);
+        claim.setPermission(HELPER.toString(), ClaimPermission.Container);
         runtime.service().grant(List.of(claim), HELPER.toString(),
                 CatCraftTrustKind.MANAGE, Duration.ofMinutes(1));
 
         runtime.service().processDue(Long.MAX_VALUE);
 
-        assertEquals(ClaimPermission.Inventory, claim.getPermission(HELPER.toString()));
+        assertEquals(ClaimPermission.Container, claim.getPermission(HELPER.toString()));
         assertFalse(claim.managers.contains(HELPER.toString()));
     }
 

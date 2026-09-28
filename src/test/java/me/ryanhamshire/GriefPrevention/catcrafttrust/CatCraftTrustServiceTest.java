@@ -55,7 +55,7 @@ class CatCraftTrustServiceTest
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.MANAGE, Duration.ofSeconds(1));
         now.set(3000L);
         service.processDue(now.get());
-        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+        assertEquals(new NativeTrustState(ClaimPermission.Container, false, false),
                 access.state(42L, TARGET, TrustDimension.PERMISSION));
     }
 
@@ -259,11 +259,11 @@ class CatCraftTrustServiceTest
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, null);
 
-        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+        assertEquals(new NativeTrustState(ClaimPermission.Container, false, false),
                 access.state(42L, TARGET, TrustDimension.PERMISSION));
         assertTrue(service.recordsForClaim(42L).isEmpty());
         scheduler.runFuture();
-        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+        assertEquals(new NativeTrustState(ClaimPermission.Container, false, false),
                 access.state(42L, TARGET, TrustDimension.PERMISSION));
     }
 
@@ -281,7 +281,7 @@ class CatCraftTrustServiceTest
         service.start();
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofDays(2));
-        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+        assertEquals(new NativeTrustState(ClaimPermission.Container, false, false),
                 access.state(42L, TARGET, TrustDimension.PERMISSION));
 
         now.addAndGet(Duration.ofDays(2).toMillis());
@@ -938,7 +938,7 @@ class CatCraftTrustServiceTest
         assertTrue(service.isSafeBuilder(claim, UUID.fromString(TARGET), null));
 
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.CONTAINER, Duration.ofDays(1));
-        assertEquals(new NativeTrustState(ClaimPermission.Inventory, false, false),
+        assertEquals(new NativeTrustState(ClaimPermission.Container, false, false),
                 access.state(42L, TARGET, TrustDimension.PERMISSION));
 
         now.addAndGet(Duration.ofDays(1).toMillis());
@@ -1430,7 +1430,7 @@ class CatCraftTrustServiceTest
         Claim claim = claim(42L, OWNER);
         service.start();
         service.grant(List.of(claim), TARGET, CatCraftTrustKind.BUILD, Duration.ofDays(1));
-        NativeTrustState newer = new NativeTrustState(ClaimPermission.Inventory, false, false);
+        NativeTrustState newer = new NativeTrustState(ClaimPermission.Container, false, false);
         access.states.put(access.key(42L, TARGET, TrustDimension.PERMISSION), newer);
 
         service.prepareClaimTransfer(claim);

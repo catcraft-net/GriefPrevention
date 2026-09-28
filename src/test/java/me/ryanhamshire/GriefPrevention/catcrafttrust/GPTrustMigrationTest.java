@@ -59,7 +59,7 @@ class GPTrustMigrationTest
         Path integrated = directory.resolve("stale-integrated.properties");
         writeLegacy(legacy, legacyRecord("BUILD", "PERMISSION"));
         DataStore dataStore = mock(DataStore.class);
-        Claim changedClaim = claim(ClaimPermission.Inventory);
+        Claim changedClaim = claim(ClaimPermission.Container);
         when(dataStore.getClaim(42L)).thenReturn(changedClaim);
         CatCraftTrustStateStore store = new CatCraftTrustStateStore(integrated, 10);
 

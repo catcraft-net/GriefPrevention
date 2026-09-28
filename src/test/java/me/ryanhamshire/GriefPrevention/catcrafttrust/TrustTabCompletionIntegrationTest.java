@@ -55,7 +55,7 @@ class TrustTabCompletionIntegrationTest
         doReturn(List.of(zed, alice, hidden)).when(server).getOnlinePlayers();
         when(command.getName()).thenReturn("trust");
 
-        for (String name : List.of("buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust"))
+        for (String name : List.of("buildtrust", "trust", "accesstrust", "containertrust", "managetrust"))
         {
             when(command.getName()).thenReturn(name);
             String label = name.equals("buildtrust") ? "bt" : name;
@@ -100,7 +100,7 @@ class TrustTabCompletionIntegrationTest
         when(alice.getName()).thenReturn("Alice");
         when(viewer.canSee(alice)).thenReturn(true);
         doReturn(List.of(alice)).when(server).getOnlinePlayers();
-        when(command.getName()).thenReturn("permissiontrust");
+        when(command.getName()).thenReturn("managetrust");
 
         assertEquals(List.of("Alice"), plugin.onTabComplete(viewer, command, "pt", new String[]{"a"}));
         assertEquals(List.of("Alice"), plugin.onTabComplete(viewer, command, "managetrust", new String[]{"a"}));

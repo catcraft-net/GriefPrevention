@@ -128,7 +128,7 @@ class TrustCommandIntegrationTest
     void allFiveGrantCommandsAcceptPermanentAndTemporaryForms()
             throws Exception
     {
-        List<String> commandNames = List.of("buildtrust", "accesstrust", "containertrust", "trust", "permissiontrust");
+        List<String> commandNames = List.of("buildtrust", "accesstrust", "containertrust", "trust", "managetrust");
         List<CatCraftTrustKind> kinds = List.of(CatCraftTrustKind.BUILD, CatCraftTrustKind.ACCESS,
                 CatCraftTrustKind.CONTAINER, CatCraftTrustKind.FULL, CatCraftTrustKind.MANAGE);
 
@@ -200,7 +200,7 @@ class TrustCommandIntegrationTest
         when(dataStore.getPlayerData(PLAYER_ID)).thenReturn(data);
         when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(null);
 
-        List<String> commandNames = List.of("trust", "accesstrust", "containertrust", "permissiontrust");
+        List<String> commandNames = List.of("trust", "accesstrust", "containertrust", "managetrust");
         List<CatCraftTrustKind> kinds = List.of(CatCraftTrustKind.FULL, CatCraftTrustKind.ACCESS,
                 CatCraftTrustKind.CONTAINER, CatCraftTrustKind.MANAGE);
         for (int index = 0; index < commandNames.size(); index++)
@@ -220,11 +220,11 @@ class TrustCommandIntegrationTest
     {
         Claim current = mockClaim(48L);
         when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
-        List<String> commandNames = List.of("buildtrust", "accesstrust", "containertrust", "trust", "permissiontrust");
+        List<String> commandNames = List.of("buildtrust", "accesstrust", "containertrust", "trust", "managetrust");
         List<CatCraftTrustKind> kinds = List.of(CatCraftTrustKind.BUILD, CatCraftTrustKind.ACCESS,
                 CatCraftTrustKind.CONTAINER, CatCraftTrustKind.FULL, CatCraftTrustKind.MANAGE);
         List<ClaimPermission> permissions = new ArrayList<>(List.of(ClaimPermission.Access, ClaimPermission.Access,
-                ClaimPermission.Inventory, ClaimPermission.Build));
+                ClaimPermission.Container, ClaimPermission.Build));
         // The original GriefPrevention permissiontrust path passed Manage into
         // TrustChangedEvent. Keep that public event payload while the service
         // receives the independent MANAGE trust kind.
@@ -297,7 +297,7 @@ class TrustCommandIntegrationTest
     {
         Claim current = mockClaim(54L);
         when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
-        when(command.getName()).thenReturn("permissiontrust");
+        when(command.getName()).thenReturn("managetrust");
 
         String target = "[catcraft.builders&a]";
         assertTrue(plugin.onCommand(player, command, "permissiontrust", new String[]{target}));
@@ -337,7 +337,7 @@ class TrustCommandIntegrationTest
         PluginCommand claimCommand = mock(PluginCommand.class);
         when(plugin.getCommand("claim")).thenReturn(claimCommand);
         List<PluginCommand> trustCommands = new ArrayList<>();
-        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust"))
+        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "managetrust"))
         {
             PluginCommand trustCommand = mock(PluginCommand.class);
             trustCommands.add(trustCommand);

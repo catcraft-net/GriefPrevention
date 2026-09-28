@@ -152,7 +152,7 @@ final class GPTrustMigration
         {
             case ACCESS -> new NativeTrustState(ClaimPermission.Access, previous.manager(), false);
             case BUILD -> new NativeTrustState(ClaimPermission.Access, previous.manager(), true);
-            case CONTAINER -> new NativeTrustState(ClaimPermission.Inventory, previous.manager(), false);
+            case CONTAINER -> new NativeTrustState(ClaimPermission.Container, previous.manager(), false);
             case FULL -> new NativeTrustState(ClaimPermission.Build, previous.manager(), false);
             case PERMISSION -> new NativeTrustState(previous.permission(), true, previous.safeBuild());
             case REVOKE -> throw new IllegalArgumentException("revoke records are not imported");
