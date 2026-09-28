@@ -53,6 +53,29 @@ class CatCraftTrustStateStoreTest
     }
 
     @Test
+    void legacyInventoryPermissionLoadsAsContainer() throws Exception
+    {
+        Path file = directory.resolve("legacy-inventory.properties");
+        CatCraftTrustStateStore first = new CatCraftTrustStateStore(file, 10);
+        TemporaryTrustRecord record = new TemporaryTrustRecord(42L, TARGET.toString(), CatCraftTrustKind.CONTAINER,
+                TrustDimension.PERMISSION, NONE, new NativeTrustState(ClaimPermission.Container, false, false),
+                2000L, 1L, OWNER);
+        first.put(record);
+        first.save();
+
+        // Records written before the upstream rename name the permission Inventory.
+        String saved = Files.readString(file, StandardCharsets.ISO_8859_1);
+        assertTrue(saved.contains("|Container|"));
+        Files.writeString(file, saved.replace("|Container|", "|Inventory|"), StandardCharsets.ISO_8859_1);
+        Files.deleteIfExists(file.resolveSibling(file.getFileName() + ".bak"));
+
+        CatCraftTrustStateStore second = new CatCraftTrustStateStore(file, 10);
+        second.load();
+        assertEquals(List.of(record), second.values());
+        assertEquals(ClaimPermission.Container, second.values().getFirst().expectedState().permission());
+    }
+
+    @Test
     void roundTripsRecordsAndIndexesCaseInsensitiveTargets() throws Exception
     {
         Path file = directory.resolve("temporary-trust.properties");

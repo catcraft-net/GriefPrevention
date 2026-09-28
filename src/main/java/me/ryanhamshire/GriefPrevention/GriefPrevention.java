@@ -22,6 +22,7 @@ import com.google.common.cache.Cache;
 import com.google.common.cache.CacheBuilder;
 import com.griefprevention.commands.ClaimCommand;
 import com.griefprevention.metrics.MetricsHandler;
+import com.griefprevention.platform.knockback.KnockbackProtectionListener;
 import com.griefprevention.protection.InteractionProtectionHandler;
 import com.griefprevention.protection.ProtectionHelper;
 import me.ryanhamshire.GriefPrevention.DataStore.NoTransferException;
@@ -414,6 +415,9 @@ public class GriefPrevention extends JavaPlugin
         //combat/damage-specific entity events
         entityDamageHandler = new EntityDamageHandler(this.dataStore, this);
         pluginManager.registerEvents(entityDamageHandler, this);
+
+        //knockback protection - handles melee, projectile, and other player-caused knockback in claims
+        new KnockbackProtectionListener(this.dataStore, this).register(this);
 
         //special interaction-related events
         pluginManager.registerEvents(new InteractionProtectionHandler(), this);
@@ -1038,7 +1042,7 @@ public class GriefPrevention extends JavaPlugin
         new ClaimCommand(this);
         TabCompleter trustCompleter = (sender, command, alias, args) ->
                 this.completeTrustCommand(command.getName(), sender, args);
-        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "permissiontrust"))
+        for (String commandName : List.of("buildtrust", "trust", "accesstrust", "containertrust", "managetrust"))
         {
             PluginCommand command = this.getCommand(commandName);
             if (command != null) command.setTabCompleter(trustCompleter);
@@ -1573,7 +1577,7 @@ public class GriefPrevention extends JavaPlugin
                 //otherwise, apply changes to only this claim
                 else if (claim.checkPermission(player, ClaimPermission.Manage, null) != null)
                 {
-                    GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoPermissionTrust, claim.getOwnerName());
+                    GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoManageTrust, claim.getOwnerName());
                     return true;
                 }
                 else
@@ -2178,7 +2182,7 @@ public class GriefPrevention extends JavaPlugin
             }
 
             //rescue destination may be set by GPFlags or other plugin, ask to find out
-            SaveTrappedPlayerEvent event = new SaveTrappedPlayerEvent(claim);
+            SaveTrappedPlayerEvent event = new SaveTrappedPlayerEvent(player, claim);
             Bukkit.getPluginManager().callEvent(event);
 
             //if the player is in the nether or end, he's screwed (there's no way to programmatically find a safe place for him)
@@ -2646,7 +2650,7 @@ public class GriefPrevention extends JavaPlugin
             if (request.kind() != CatCraftTrustKind.BUILD
                     && claim.checkPermission(player, ClaimPermission.Manage, null) != null)
             {
-                GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoPermissionTrust, claim.getOwnerName());
+                GriefPrevention.sendMessage(player, TextMode.Err, Messages.NoManageTrust, claim.getOwnerName());
                 return;
             }
             targetClaims.add(claim);
@@ -2782,7 +2786,7 @@ public class GriefPrevention extends JavaPlugin
         return switch (kind)
         {
             case BUILD, ACCESS -> ClaimPermission.Access;
-            case CONTAINER -> ClaimPermission.Inventory;
+            case CONTAINER -> ClaimPermission.Container;
             case FULL -> ClaimPermission.Build;
             case MANAGE -> ClaimPermission.Manage;
         };

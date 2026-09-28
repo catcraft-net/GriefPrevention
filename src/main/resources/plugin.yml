@@ -3,7 +3,7 @@ main: me.ryanhamshire.GriefPrevention.GriefPrevention
 softdepend: [Multiverse-Core, My_Worlds, MystCraft, Transporter, RoyalCommands, MultiWorld, Denizen, CommandHelper]
 dev-url: https://dev.bukkit.org/projects/grief-prevention
 version: '${git.commit.id.describe}'
-api-version: '1.20'
+api-version: '26.2'
 commands:
     abandonclaim:
       description: Deletes a claim.
@@ -43,10 +43,10 @@ commands:
       usage: /<command> <player> [time]
       aliases: at
       permission: griefprevention.claims
-    permissiontrust:
+    managetrust:
       description: Grants a player permission to manage the claim trustlist.
       usage: /<command> <player> [time]
-      aliases: [pt, managetrust]
+      aliases: [pt, permissiontrust]
       permission: griefprevention.claims
     subdivideclaims:
       description: Switches the shovel tool to subdivision mode, used to subdivide your claims.

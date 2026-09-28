@@ -75,7 +75,7 @@ class SafeBuildPermissionIntegrationTest
         when(service.onExternalTargetRemoved(any(), any())).thenReturn(false);
         when(service.onExternalPermissionsCleared(any())).thenReturn(false);
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
-                () -> claim.setPermission(BUILDER.toString(), ClaimPermission.Inventory));
+                () -> claim.setPermission(BUILDER.toString(), ClaimPermission.Container));
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
                 () -> claim.dropPermission(BUILDER.toString()));
         org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, claim::clearPermissions);
@@ -99,15 +99,15 @@ class SafeBuildPermissionIntegrationTest
         when(player.getUniqueId()).thenReturn(BUILDER);
         when(player.hasPermission("test.group")).thenReturn(true);
         assertNull(check(individual, BUILDER, ClaimPermission.Build));
-        assertNull(check(publicClaim, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(publicClaim, BUILDER, ClaimPermission.Container));
         assertNull(check(group, player, ClaimPermission.Manage));
         now.set(2000L);
         assertNotNull(check(individual, BUILDER, ClaimPermission.Build));
         assertNotNull(check(individual, BUILDER, ClaimPermission.Manage));
-        assertNotNull(check(publicClaim, BUILDER, ClaimPermission.Inventory));
-        assertNotNull(check(group, player, ClaimPermission.Inventory));
+        assertNotNull(check(publicClaim, BUILDER, ClaimPermission.Container));
+        assertNotNull(check(group, player, ClaimPermission.Container));
         assertNotNull(check(group, player, ClaimPermission.Manage));
-        assertNull(check(individual, OWNER, ClaimPermission.Inventory));
+        assertNull(check(individual, OWNER, ClaimPermission.Container));
     }
 
     @Test
@@ -118,9 +118,9 @@ class SafeBuildPermissionIntegrationTest
         real.grant(List.of(claim), BUILDER.toString(), CatCraftTrustKind.CONTAINER, java.time.Duration.ofDays(1));
         real.grant(List.of(claim), BUILDER.toString(), CatCraftTrustKind.MANAGE, null);
         real.stop();
-        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Container));
         assertNull(check(claim, BUILDER, ClaimPermission.Manage));
-        assertNull(check(claim, OWNER, ClaimPermission.Inventory));
+        assertNull(check(claim, OWNER, ClaimPermission.Container));
     }
 
     @Test
@@ -131,7 +131,7 @@ class SafeBuildPermissionIntegrationTest
 
         assertNull(check(claim, BUILDER, ClaimPermission.Build));
         assertNull(check(claim, BUILDER, ClaimPermission.Access));
-        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Container));
         assertNotNull(check(claim, BUILDER, ClaimPermission.Manage));
         assertNotNull(check(claim, BUILDER, ClaimPermission.Edit));
     }
@@ -170,7 +170,7 @@ class SafeBuildPermissionIntegrationTest
 
         assertNull(check(claim, player, ClaimPermission.Build));
         assertNull(check(claim, player, ClaimPermission.Access));
-        assertNotNull(check(claim, player, ClaimPermission.Inventory));
+        assertNotNull(check(claim, player, ClaimPermission.Container));
         assertNotNull(check(claim, player, ClaimPermission.Manage));
         assertNotNull(check(claim, player, ClaimPermission.Edit));
     }
@@ -199,7 +199,7 @@ class SafeBuildPermissionIntegrationTest
 
         assertNotNull(check(child, BUILDER, ClaimPermission.Build));
         assertNotNull(check(child, BUILDER, ClaimPermission.Access));
-        assertNotNull(check(child, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(child, BUILDER, ClaimPermission.Container));
         assertNotNull(check(child, BUILDER, ClaimPermission.Manage));
         assertNotNull(check(child, BUILDER, ClaimPermission.Edit));
     }
@@ -221,13 +221,13 @@ class SafeBuildPermissionIntegrationTest
         Claim full = claim(42L, OWNER);
         full.setPermission(BUILDER.toString(), ClaimPermission.Build);
         assertNull(check(full, BUILDER, ClaimPermission.Build));
-        assertNull(check(full, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(full, BUILDER, ClaimPermission.Container));
         assertNull(check(full, BUILDER, ClaimPermission.Access));
 
         Claim container = claim(43L, OWNER);
-        container.setPermission(BUILDER.toString(), ClaimPermission.Inventory);
+        container.setPermission(BUILDER.toString(), ClaimPermission.Container);
         assertNotNull(check(container, BUILDER, ClaimPermission.Build));
-        assertNull(check(container, BUILDER, ClaimPermission.Inventory));
+        assertNull(check(container, BUILDER, ClaimPermission.Container));
         assertNull(check(container, BUILDER, ClaimPermission.Access));
     }
 
@@ -308,7 +308,7 @@ class SafeBuildPermissionIntegrationTest
         assertTrue(realService.isSafeBuilder(claim, BUILDER, null));
         assertNull(check(claim, BUILDER, ClaimPermission.Build));
         assertNull(check(claim, BUILDER, ClaimPermission.Access));
-        assertNotNull(check(claim, BUILDER, ClaimPermission.Inventory));
+        assertNotNull(check(claim, BUILDER, ClaimPermission.Container));
         assertNull(check(claim, BUILDER, ClaimPermission.Manage));
     }
 
@@ -389,7 +389,7 @@ class SafeBuildPermissionIntegrationTest
     {
         assertNull(check(claim, playerId, ClaimPermission.Build));
         assertNull(check(claim, playerId, ClaimPermission.Access));
-        assertNotNull(check(claim, playerId, ClaimPermission.Inventory));
+        assertNotNull(check(claim, playerId, ClaimPermission.Container));
         assertNotNull(check(claim, playerId, ClaimPermission.Manage));
         assertNotNull(check(claim, playerId, ClaimPermission.Edit));
     }

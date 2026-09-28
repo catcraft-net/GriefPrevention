@@ -5,6 +5,7 @@ import me.ryanhamshire.GriefPrevention.GriefPrevention;
 import org.bukkit.Server;
 import org.bukkit.plugin.PluginManager;
 import org.bukkit.scheduler.BukkitScheduler;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -22,6 +23,12 @@ import static org.mockito.Mockito.when;
 
 class CatCraftTrustRuntimeTest
 {
+    @BeforeAll
+    static void loadRegistries()
+    {
+        BukkitRegistryBootstrap.initialize();
+    }
+
     @TempDir
     Path directory;
 

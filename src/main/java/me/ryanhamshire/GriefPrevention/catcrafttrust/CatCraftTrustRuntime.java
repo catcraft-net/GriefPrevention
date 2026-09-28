@@ -87,8 +87,8 @@ public final class CatCraftTrustRuntime
                 // inventory permission still take precedence for manual actions.
                 return service.isSafeBuilder(claim, playerId, player)
                         && (player == null
-                        ? claim.checkPermission(playerId, ClaimPermission.Inventory, null) != null
-                        : claim.checkPermission(player, ClaimPermission.Inventory, null) != null);
+                        ? claim.checkPermission(playerId, ClaimPermission.Container, null) != null
+                        : claim.checkPermission(player, ClaimPermission.Container, null) != null);
             }
 
             @Override
