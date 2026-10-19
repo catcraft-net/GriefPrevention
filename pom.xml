@@ -171,8 +171,8 @@
         <dependency>
             <groupId>io.papermc.paper</groupId>
             <artifactId>paper-api</artifactId>
-            <!-- CatCraft: pinned to the Paper version the server runs; an open range picks up 26.3 pre-releases -->
-            <version>26.2.build.129-stable</version>
+            <!-- CatCraft: pinned to the Paper version the server runs (26.3); an open range picks up pre-releases -->
+            <version>26.3.build.205-stable</version>
             <scope>provided</scope>
             <optional>true</optional>
         </dependency>
