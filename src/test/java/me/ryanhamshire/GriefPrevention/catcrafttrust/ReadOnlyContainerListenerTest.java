@@ -105,6 +105,7 @@ class ReadOnlyContainerListenerTest
     private DataStore dataStore;
     private World world;
     private Block block;
+    private Block air;
     private Chest state;
     private Inventory source;
     private Inventory playerInventory;
@@ -143,6 +144,9 @@ class ReadOnlyContainerListenerTest
         when(block.getWorld()).thenReturn(world);
         when(block.getLocation()).thenReturn(location);
         when(block.getState()).thenReturn(state);
+        air = mock(Block.class);
+        when(air.getType()).thenReturn(Material.AIR);
+        when(block.getRelative(any(BlockFace.class))).thenReturn(air);
         when(state.getBlock()).thenReturn(block);
         when(state.getType()).thenReturn(Material.CHEST);
         when(state.getInventory()).thenReturn(source);
@@ -576,40 +580,158 @@ class ReadOnlyContainerListenerTest
     }
 
     @Test
-    void safeBuilderPausesBoundedAutomationAndFluidPathsInClaim()
+    void claimAutomationKeepsRunningWhileSafeBuilderExists()
     {
+        // Hoppers, droppers, pistons, redstone and water flow must never be paused
+        // claim-wide: players' farms keep running while someone has Build Trust.
+        List<Class<?>> farmEvents = List.of(InventoryMoveItemEvent.class, InventoryPickupItemEvent.class,
+                BlockDispenseEvent.class, BlockPistonExtendEvent.class,
+                org.bukkit.event.block.BlockPistonRetractEvent.class, BlockRedstoneEvent.class);
+        for (java.lang.reflect.Method method : ReadOnlyContainerListener.class.getMethods())
+        {
+            if (!method.isAnnotationPresent(org.bukkit.event.EventHandler.class)) continue;
+            for (Class<?> parameter : method.getParameterTypes())
+            {
+                assertFalse(farmEvents.contains(parameter), method.getName());
+            }
+        }
+
+        // Water keeps flowing, except where it would wash away the owner's redstone.
         when(trusts.hasAnySafeBuilders()).thenReturn(true);
         when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
+        Block target = mock(Block.class);
+        Location targetLocation = block.getLocation();
+        when(target.getLocation()).thenReturn(targetLocation);
+        when(target.getType()).thenReturn(Material.AIR);
+        BlockFromToEvent flow = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(flow);
+        assertFalse(flow.isCancelled());
+        when(target.getType()).thenReturn(Material.REDSTONE_WIRE);
+        BlockFromToEvent washout = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(washout);
+        assertTrue(washout.isCancelled());
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(false);
+        BlockFromToEvent ownerOnly = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(ownerOnly);
+        assertFalse(ownerOnly.isCancelled());
+    }
 
-        InventoryMoveItemEvent move = new InventoryMoveItemEvent(
-                source, new ItemStack(Material.STONE), source, true);
-        listener.onInventoryMove(move);
-        assertTrue(move.isCancelled());
+    @Test
+    void safeBuilderCannotPlaceBreakOrUsePowerSources()
+    {
+        when(block.getState()).thenReturn(mock(BlockState.class));
+        for (Material component : List.of(Material.LEVER, Material.OAK_BUTTON, Material.DAYLIGHT_DETECTOR,
+                Material.TARGET, Material.TRIPWIRE_HOOK, Material.SCULK_SENSOR, Material.DETECTOR_RAIL,
+                Material.POWERED_RAIL, Material.LIGHTNING_ROD, Material.REPEATER, Material.COMPARATOR,
+                Material.OBSERVER, Material.REDSTONE_WIRE))
+        {
+            when(block.getType()).thenReturn(component);
+            BlockBreakEvent breakEvent = new BlockBreakEvent(block, player);
+            listener.onBlockBreak(breakEvent);
+            assertTrue(breakEvent.isCancelled(), "break " + component);
 
-        Item dropped = mock(Item.class);
-        Location droppedLocation = block.getLocation();
-        when(dropped.getLocation()).thenReturn(droppedLocation);
-        InventoryPickupItemEvent pickup = new InventoryPickupItemEvent(source, dropped);
-        listener.onInventoryPickup(pickup);
-        assertTrue(pickup.isCancelled());
+            ItemStack item = mock(ItemStack.class);
+            when(item.getType()).thenReturn(component);
+            BlockPlaceEvent placeEvent = new BlockPlaceEvent(
+                    block, mock(BlockState.class), air, item, player, true, EquipmentSlot.HAND);
+            listener.onBlockPlace(placeEvent);
+            assertTrue(placeEvent.isCancelled(), "place " + component);
 
-        BlockDispenseEvent dispense = new BlockDispenseEvent(
-                block, new ItemStack(Material.STONE), new org.bukkit.util.Vector());
-        listener.onBlockDispense(dispense);
-        assertTrue(dispense.isCancelled());
+            PlayerInteractEvent use = interact();
+            listener.onPlayerInteract(use);
+            assertTrue(use.isCancelled(), "use " + component);
+        }
+        verify(player, times(1)).sendMessage(org.mockito.ArgumentMatchers.contains("/trust"));
+    }
 
-        BlockPistonExtendEvent piston = new BlockPistonExtendEvent(
-                block, List.of(block), BlockFace.NORTH);
-        listener.onPistonExtend(piston);
-        assertTrue(piston.isCancelled());
+    @Test
+    void safeBuilderCannotChangeBlocksTouchingRedstoneButCanBuildElsewhere()
+    {
+        when(block.getType()).thenReturn(Material.STONE);
+        when(block.getState()).thenReturn(mock(BlockState.class));
+        ItemStack stone = mock(ItemStack.class);
+        when(stone.getType()).thenReturn(Material.STONE);
 
-        BlockRedstoneEvent redstone = new BlockRedstoneEvent(block, 0, 15);
-        listener.onRedstone(redstone);
-        assertEquals(redstone.getOldCurrent(), redstone.getNewCurrent());
+        BlockBreakEvent freeBreak = new BlockBreakEvent(block, player);
+        listener.onBlockBreak(freeBreak);
+        assertFalse(freeBreak.isCancelled());
+        BlockPlaceEvent freePlace = new BlockPlaceEvent(
+                block, mock(BlockState.class), air, stone, player, true, EquipmentSlot.HAND);
+        listener.onBlockPlace(freePlace);
+        assertFalse(freePlace.isCancelled());
 
-        BlockFromToEvent flow = new BlockFromToEvent(block, block);
-        listener.onBlockFromTo(flow);
-        assertTrue(flow.isCancelled());
+        for (Material neighbour : List.of(Material.OBSERVER, Material.HOPPER, Material.DROPPER,
+                Material.REDSTONE_WIRE, Material.STICKY_PISTON, Material.STONE_PRESSURE_PLATE))
+        {
+            Block machine = mock(Block.class);
+            when(machine.getType()).thenReturn(neighbour);
+            when(block.getRelative(BlockFace.NORTH)).thenReturn(machine);
+
+            BlockBreakEvent breakEvent = new BlockBreakEvent(block, player);
+            listener.onBlockBreak(breakEvent);
+            assertTrue(breakEvent.isCancelled(), "break next to " + neighbour);
+
+            BlockPlaceEvent placeEvent = new BlockPlaceEvent(
+                    block, mock(BlockState.class), air, stone, player, true, EquipmentSlot.HAND);
+            listener.onBlockPlace(placeEvent);
+            assertTrue(placeEvent.isCancelled(), "place next to " + neighbour);
+
+            when(block.getType()).thenReturn(Material.OAK_TRAPDOOR);
+            PlayerInteractEvent toggle = interact();
+            listener.onPlayerInteract(toggle);
+            assertTrue(toggle.isCancelled(), "toggle next to " + neighbour);
+            when(block.getType()).thenReturn(Material.STONE);
+        }
+    }
+
+    @Test
+    void ownerAndOtherPlayersAreNotLimitedNearRedstone()
+    {
+        when(trusts.isSafeBuilder(claim, playerId, player)).thenReturn(false);
+        when(block.getType()).thenReturn(Material.REDSTONE_WIRE);
+        when(block.getState()).thenReturn(mock(BlockState.class));
+        BlockBreakEvent breakEvent = new BlockBreakEvent(block, player);
+        listener.onBlockBreak(breakEvent);
+        assertFalse(breakEvent.isCancelled());
+        PlayerInteractEvent use = interact();
+        listener.onPlayerInteract(use);
+        assertFalse(use.isCancelled());
+    }
+
+    @Test
+    void itemsThrownOrRiddenOntoPlatesBySafeBuilderDoNotTriggerThem()
+    {
+        when(trusts.hasAnySafeBuilders()).thenReturn(true);
+        when(block.getType()).thenReturn(Material.OAK_PRESSURE_PLATE);
+        Item thrown = mock(Item.class);
+        when(thrown.getThrower()).thenReturn(playerId);
+        org.bukkit.event.entity.EntityInteractEvent byBuilder =
+                new org.bukkit.event.entity.EntityInteractEvent(thrown, block);
+        listener.onEntityInteract(byBuilder);
+        assertTrue(byBuilder.isCancelled());
+
+        Item ownerItem = mock(Item.class);
+        when(ownerItem.getThrower()).thenReturn(ownerId);
+        org.bukkit.event.entity.EntityInteractEvent byOwner =
+                new org.bukkit.event.entity.EntityInteractEvent(ownerItem, block);
+        listener.onEntityInteract(byOwner);
+        assertFalse(byOwner.isCancelled());
+
+        UUID loggedOut = UUID.randomUUID();
+        when(server.getPlayer(loggedOut)).thenReturn(null);
+        when(trusts.isSafeBuilder(claim, loggedOut, null)).thenReturn(true);
+        Item afterLogout = mock(Item.class);
+        when(afterLogout.getThrower()).thenReturn(loggedOut);
+        org.bukkit.event.entity.EntityInteractEvent offlineBuilder =
+                new org.bukkit.event.entity.EntityInteractEvent(afterLogout, block);
+        listener.onEntityInteract(offlineBuilder);
+        assertTrue(offlineBuilder.isCancelled());
+
+        Entity mob = mock(Entity.class);
+        org.bukkit.event.entity.EntityInteractEvent byMob =
+                new org.bukkit.event.entity.EntityInteractEvent(mob, block);
+        listener.onEntityInteract(byMob);
+        assertFalse(byMob.isCancelled());
     }
 
     @Test
@@ -635,11 +757,19 @@ class ReadOnlyContainerListenerTest
     {
         when(trusts.hasAnySafeBuilders()).thenReturn(true);
         when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
-        Entity entity = mock(Entity.class,
+        Entity entity = mock(Vehicle.class,
                 org.mockito.Mockito.withSettings().extraInterfaces(InventoryHolder.class));
         Location entityLocation = block.getLocation();
         when(entity.getLocation()).thenReturn(entityLocation);
         when(((InventoryHolder) entity).getInventory()).thenReturn(source);
+
+        Entity piglin = mock(org.bukkit.entity.LivingEntity.class,
+                org.mockito.Mockito.withSettings().extraInterfaces(InventoryHolder.class));
+        when(piglin.getLocation()).thenReturn(entityLocation);
+        EntityDamageEvent mobDamage = mock(EntityDamageEvent.class);
+        when(mobDamage.getEntity()).thenReturn(piglin);
+        listener.onEntityDamage(mobDamage);
+        verify(mobDamage, never()).setCancelled(any(Boolean.class));
 
         EntityDamageEvent damage = mock(EntityDamageEvent.class);
         when(damage.getEntity()).thenReturn(entity);

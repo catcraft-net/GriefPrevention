@@ -58,6 +58,14 @@ public final class StorageProtectionPolicy
             Material.REDSTONE_BLOCK, Material.REDSTONE_TORCH, Material.REDSTONE_WALL_TORCH,
             Material.REPEATER, Material.COMPARATOR, Material.REDSTONE_WIRE, Material.TNT);
 
+    // Power sources and sensors that can trigger an owner's machines. Safe
+    // builders may not place, break or use these, or build right next to them.
+    private static final Set<Material> REDSTONE_MATERIALS = EnumSet.of(
+            Material.LEVER, Material.TRIPWIRE_HOOK, Material.TRIPWIRE,
+            Material.DAYLIGHT_DETECTOR, Material.TARGET,
+            Material.SCULK_SENSOR, Material.CALIBRATED_SCULK_SENSOR,
+            Material.POWERED_RAIL, Material.DETECTOR_RAIL, Material.ACTIVATOR_RAIL);
+
     private StorageProtectionPolicy()
     {
     }
@@ -90,7 +98,7 @@ public final class StorageProtectionPolicy
             return StorageDecision.AMBIGUOUS_DENIED;
         }
         if (material == null || state == null) return StorageDecision.AMBIGUOUS_DENIED;
-        if (AUTOMATION_MATERIALS.contains(material)) return StorageDecision.AUTOMATION_DENIED;
+        if (isRedstoneComponent(material)) return StorageDecision.AUTOMATION_DENIED;
         if (material == Material.CAMPFIRE || material == Material.SOUL_CAMPFIRE)
         {
             return classifyCampfire(state);
@@ -113,13 +121,25 @@ public final class StorageProtectionPolicy
     }
 
     /**
+     * Redstone components, power sources and item-moving machines. A safe
+     * builder cannot place, break or use them, so claim automation keeps
+     * running without a builder being able to rewire it.
+     */
+    public static boolean isRedstoneComponent(Material material)
+    {
+        if (material == null) return false;
+        return AUTOMATION_MATERIALS.contains(material) || REDSTONE_MATERIALS.contains(material)
+                || isDirectRedstoneControl(material) || material.name().endsWith("LIGHTNING_ROD");
+    }
+
+    /**
      * Returns whether a material can be placed by a safe builder. Storage
      * blocks may be placed when their contents are not an automation bypass;
      * extraction and output automation is denied at the material boundary.
      */
     public static boolean denyPlacement(Material material)
     {
-        return material != null && AUTOMATION_MATERIALS.contains(material);
+        return isRedstoneComponent(material);
     }
 
     /**
