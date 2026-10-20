@@ -196,6 +196,8 @@ public final class ReadOnlyContainerListener implements Listener
         }
 
         if (isPersonalOrWorkstation(top, holder, player)) return;
+        // Another player's inventory (staff tools like OpenInv) is never claim storage.
+        if (holder instanceof HumanEntity) return;
         Block block = blockForHolder(holder);
         if (block == null)
         {
@@ -299,6 +301,8 @@ public final class ReadOnlyContainerListener implements Listener
             if (top == null) return false;
             InventoryHolder holder = top.getHolder();
             if (isPersonalOrWorkstation(top, holder, player)) return true;
+            // Another player's inventory reports their position, not a claim container.
+            if (holder instanceof HumanEntity) return true;
             if (holder instanceof DoubleChest chest)
             {
                 return storageHolderAllowed(chest.getLeftSide(), player, event)
