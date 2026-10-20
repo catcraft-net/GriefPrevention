@@ -221,6 +221,35 @@ class ReadOnlyContainerListenerTest
         assertFalse(event.isCancelled());
     }
 
+    @ParameterizedTest
+    @EnumSource(value = InventoryType.class, names = {"PLAYER", "ENDER_CHEST"})
+    void otherPlayersInventoryInAClaimStaysUsableForStaffTools(InventoryType type)
+    {
+        // OpenInv's /open and /openender views report the target as holder and the target's position as location.
+        Player target = mock(Player.class);
+        when(target.getUniqueId()).thenReturn(UUID.randomUUID());
+        Location targetLocation = player.getLocation();
+        Inventory top = mock(Inventory.class);
+        when(top.getType()).thenReturn(type);
+        when(top.getHolder()).thenReturn(target);
+        when(top.getLocation()).thenReturn(targetLocation);
+        when(trusts.isSafeBuilder(claim, playerId, player)).thenReturn(false);
+        when(claim.checkPermission(eq(player), eq(me.ryanhamshire.GriefPrevention.ClaimPermission.Container), any()))
+                .thenReturn(() -> "no container trust in the target's claim");
+        InventoryOpenEvent open = new InventoryOpenEvent(view(top));
+        listener.onInventoryOpen(open);
+        assertFalse(open.isCancelled());
+        InventoryClickEvent click = new InventoryClickEvent(view(top),
+                InventoryType.SlotType.CONTAINER, 0, ClickType.LEFT, InventoryAction.PLACE_ALL);
+        listener.onInventoryClick(click);
+        assertFalse(click.isCancelled());
+        ItemStack cursor = mock(ItemStack.class);
+        InventoryDragEvent drag = new InventoryDragEvent(view(top), cursor, cursor, true, java.util.Map.of(0, cursor));
+        listener.onInventoryDrag(drag);
+        assertFalse(drag.isCancelled());
+        assertTrue(scheduled.isEmpty());
+    }
+
     @Test
     void realStorageAccessFailsClosedWhenClaimLookupThrows()
     {
