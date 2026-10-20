@@ -5,14 +5,19 @@ import me.ryanhamshire.GriefPrevention.ClaimPermission;
 import me.ryanhamshire.GriefPrevention.DataStore;
 import me.ryanhamshire.GriefPrevention.GriefPrevention;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.World;
 import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.DoubleChest;
+import org.bukkit.entity.ChestedHorse;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Player;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.Projectile;
+import org.bukkit.entity.Vehicle;
 import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -20,24 +25,21 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockBreakEvent;
-import org.bukkit.event.block.BlockDispenseEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
-import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
-import org.bukkit.event.block.BlockPistonExtendEvent;
-import org.bukkit.event.block.BlockPistonRetractEvent;
-import org.bukkit.event.block.BlockRedstoneEvent;
+import org.bukkit.event.block.BlockReceiveGameEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.entity.EntityInteractEvent;
+import org.bukkit.event.entity.ProjectileHitEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryCloseEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.inventory.InventoryEvent;
-import org.bukkit.event.inventory.InventoryMoveItemEvent;
 import org.bukkit.event.inventory.InventoryOpenEvent;
-import org.bukkit.event.inventory.InventoryPickupItemEvent;
 import org.bukkit.event.inventory.InventoryType;
 import org.bukkit.event.player.PlayerInteractEntityEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
@@ -73,6 +75,10 @@ public final class ReadOnlyContainerListener implements Listener
 {
     private static final String DENIAL_MESSAGE =
             "§b[CatCraft] §eBuild Trust allows read-only container viewing.";
+    private static final String REDSTONE_DENIAL_MESSAGE =
+            "§b[CatCraft] §eBuild Trust can't change redstone or machines. Ask the claim owner for §b/trust§e if you're helping with a redstone build.";
+    private static final String FLUID_DENIAL_MESSAGE =
+            "§b[CatCraft] §eBuild Trust can't place water or lava.";
     private static final long DEFAULT_DENIAL_COOLDOWN_MILLIS = 3000L;
 
     private final JavaPlugin plugin;
@@ -118,10 +124,12 @@ public final class ReadOnlyContainerListener implements Listener
         StorageProtectionPolicy.StorageDecision decision = StorageProtectionPolicy.classifyBreak(block);
         if (decision == StorageProtectionPolicy.StorageDecision.ORDINARY)
         {
-            if (StorageProtectionPolicy.isDirectRedstoneControl(block.getType()))
+            // Changing a block next to an observer, piston or other component
+            // could trigger the owner's machines, so it is treated as redstone.
+            if (touchesRedstone(block))
             {
                 cancelInteraction(event);
-                deny(player);
+                if (event.getAction() == Action.RIGHT_CLICK_BLOCK) denyRedstone(player);
                 return;
             }
             if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
@@ -129,11 +137,18 @@ public final class ReadOnlyContainerListener implements Listener
             if (item != null && StorageProtectionPolicy.denyPlacement(item))
             {
                 cancelInteraction(event);
-                deny(player);
+                if (StorageProtectionPolicy.isRedstoneComponent(item.getType())) denyRedstone(player);
+                else deny(player);
             }
             return;
         }
         cancelInteraction(event);
+        if (decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED
+                && !(safeState(block) instanceof InventoryHolder))
+        {
+            if (event.getAction() == Action.RIGHT_CLICK_BLOCK) denyRedstone(player);
+            return;
+        }
         if (decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED)
         {
             deny(player);
@@ -343,9 +358,14 @@ public final class ReadOnlyContainerListener implements Listener
         Claim claim = claimAt(block.getLocation());
         if (!safeBuilder(claim, player)) return;
         StorageProtectionPolicy.StorageDecision decision = StorageProtectionPolicy.classifyBreak(block);
+        if (decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED || touchesRedstone(block))
+        {
+            event.setCancelled(true);
+            denyRedstone(player);
+            return;
+        }
         if (decision == StorageProtectionPolicy.StorageDecision.PROTECTED_NONEMPTY
-                || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED
-                || decision == StorageProtectionPolicy.StorageDecision.AUTOMATION_DENIED)
+                || decision == StorageProtectionPolicy.StorageDecision.AMBIGUOUS_DENIED)
         {
             event.setCancelled(true);
             deny(player);
@@ -360,11 +380,128 @@ public final class ReadOnlyContainerListener implements Listener
         Claim claim = claimAt(block.getLocation());
         if (!safeBuilder(claim, player)) return;
         if (StorageProtectionPolicy.denyPlacement(block.getType())
-                || StorageProtectionPolicy.denyPlacement(event.getItemInHand()))
+                || StorageProtectionPolicy.isRedstoneComponent(safeItemType(event.getItemInHand()))
+                || touchesRedstone(block) || multiPlaceTouchesRedstone(event))
+        {
+            event.setCancelled(true);
+            denyRedstone(player);
+            return;
+        }
+        if (StorageProtectionPolicy.denyPlacement(event.getItemInHand()))
         {
             event.setCancelled(true);
             deny(player);
         }
+    }
+
+    private boolean multiPlaceTouchesRedstone(BlockPlaceEvent event)
+    {
+        if (!(event instanceof BlockMultiPlaceEvent multi)) return false;
+        try
+        {
+            for (BlockState state : multi.getReplacedBlockStates())
+            {
+                if (state != null && touchesRedstone(state.getBlock())) return true;
+            }
+            return false;
+        }
+        catch (RuntimeException failure)
+        {
+            return true;
+        }
+    }
+
+    private static @Nullable Material safeItemType(@Nullable ItemStack item)
+    {
+        try
+        {
+            return item == null ? null : item.getType();
+        }
+        catch (RuntimeException failure)
+        {
+            return null;
+        }
+    }
+
+    /**
+     * True when the block is a redstone component or shares a face with one.
+     * Safe builders may not change these blocks, because placing, breaking or
+     * changing a neighbour can power, update or rewire the owner's machines.
+     */
+    static boolean touchesRedstone(@Nullable Block block)
+    {
+        if (block == null) return false;
+        try
+        {
+            if (StorageProtectionPolicy.isRedstoneComponent(block.getType())) return true;
+            for (BlockFace face : NEIGHBOUR_FACES)
+            {
+                if (StorageProtectionPolicy.isRedstoneComponent(block.getRelative(face).getType())) return true;
+            }
+            return false;
+        }
+        catch (RuntimeException failure)
+        {
+            return true;
+        }
+    }
+
+    private static final BlockFace[] NEIGHBOUR_FACES = {
+            BlockFace.UP, BlockFace.DOWN, BlockFace.NORTH, BlockFace.SOUTH, BlockFace.EAST, BlockFace.WEST};
+
+    /**
+     * Pressure plates, tripwires, detector rails and buttons triggered by
+     * something a safe builder threw, shot or rides.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onEntityInteract(EntityInteractEvent event)
+    {
+        Block block = event.getBlock();
+        if (block == null || !StorageProtectionPolicy.isRedstoneComponent(block.getType())) return;
+        if (!hasAnySafeBuilders()) return;
+        Player player = triggeringPlayer(event.getEntity());
+        if (player != null && safeBuilder(claimAt(block.getLocation()), player)) event.setCancelled(true);
+    }
+
+    /** Targets, wooden buttons and lightning rods hit by a safe builder's projectile. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onProjectileHit(ProjectileHitEvent event)
+    {
+        Block block = event.getHitBlock();
+        if (block == null || !StorageProtectionPolicy.isRedstoneComponent(block.getType())) return;
+        if (!hasAnySafeBuilders()) return;
+        Player player = responsiblePlayer(event.getEntity());
+        if (player != null && safeBuilder(claimAt(block.getLocation()), player)) event.setCancelled(true);
+    }
+
+    /** Sculk sensors hearing a safe builder. */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onSculkHear(BlockReceiveGameEvent event)
+    {
+        if (!hasAnySafeBuilders()) return;
+        Player player = triggeringPlayer(event.getEntity());
+        if (player != null && safeBuilder(claimAt(event.getBlock().getLocation()), player)) event.setCancelled(true);
+    }
+
+    private @Nullable Player triggeringPlayer(@Nullable Entity entity)
+    {
+        if (entity == null) return null;
+        try
+        {
+            Player player = responsiblePlayer(entity);
+            if (player != null) return player;
+            if (entity instanceof Item item && item.getThrower() != null)
+                return plugin.getServer().getPlayer(item.getThrower());
+            for (Entity passenger : entity.getPassengers())
+            {
+                if (passenger instanceof Player rider) return rider;
+            }
+        }
+        catch (RuntimeException ignored)
+        {
+            // An unreadable source cannot establish authorization.
+        }
+        return null;
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -376,7 +513,7 @@ public final class ReadOnlyContainerListener implements Listener
         if (safeBuilder(claim, event.getPlayer()))
         {
             event.setCancelled(true);
-            deny(event.getPlayer());
+            deny(event.getPlayer(), FLUID_DENIAL_MESSAGE);
         }
     }
 
@@ -392,58 +529,6 @@ public final class ReadOnlyContainerListener implements Listener
         {
             event.setCancelled(true);
             deny(player);
-        }
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onInventoryMove(InventoryMoveItemEvent event)
-    {
-        if (safeBuildExistsAt(event.getSource()) || safeBuildExistsAt(event.getDestination())
-                || safeBuildExistsAt(event.getInitiator())) event.setCancelled(true);
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onInventoryPickup(InventoryPickupItemEvent event)
-    {
-        if (safeBuildExistsAt(event.getInventory())) event.setCancelled(true);
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onBlockDispense(BlockDispenseEvent event)
-    {
-        if (safeBuildExistsAt(event.getBlock())) event.setCancelled(true);
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onPistonExtend(BlockPistonExtendEvent event)
-    {
-        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getBlocks()))
-        {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onPistonRetract(BlockPistonRetractEvent event)
-    {
-        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getBlocks()))
-        {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onRedstone(BlockRedstoneEvent event)
-    {
-        if (safeBuildExistsAt(event.getBlock())) event.setNewCurrent(event.getOldCurrent());
-    }
-
-    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
-    public void onBlockFromTo(BlockFromToEvent event)
-    {
-        if (safeBuildExistsAt(event.getBlock()) || safeBuildExistsAt(event.getToBlock()))
-        {
-            event.setCancelled(true);
         }
     }
 
@@ -471,8 +556,9 @@ public final class ReadOnlyContainerListener implements Listener
     {
         if (event instanceof EntityDamageByEntityEvent) return;
         Entity entity = event.getEntity();
-        if (!(entity instanceof InventoryHolder)
-                || entity instanceof HumanEntity || entity instanceof Merchant) return;
+        // Only item-carrying vehicles and chested animals: mobs such as piglins
+        // and allays must keep taking damage so mob farms keep working.
+        if (!isStorageEntity(entity)) return;
         if (safeBuildExistsAt(entity.getLocation())) event.setCancelled(true);
     }
 
@@ -689,12 +775,22 @@ public final class ReadOnlyContainerListener implements Listener
 
     private void deny(Player player)
     {
+        deny(player, DENIAL_MESSAGE);
+    }
+
+    private void denyRedstone(Player player)
+    {
+        deny(player, REDSTONE_DENIAL_MESSAGE);
+    }
+
+    private void deny(Player player, String message)
+    {
         long now = nowMillis.getAsLong();
         Long previous = denialTimestamps.get(player.getUniqueId());
         if (previous == null || now - previous >= denialCooldownMillis)
         {
             denialTimestamps.put(player.getUniqueId(), now);
-            player.sendMessage(DENIAL_MESSAGE);
+            player.sendMessage(message);
         }
     }
 
@@ -788,22 +884,6 @@ public final class ReadOnlyContainerListener implements Listener
         return block != null && safeBuildExistsAt(block.getLocation());
     }
 
-    private boolean safeBuildExistsAt(@Nullable List<Block> blocks)
-    {
-        if (blocks == null) return false;
-        for (Block block : blocks)
-        {
-            if (safeBuildExistsAt(block)) return true;
-        }
-        return false;
-    }
-
-    private boolean safeBuildExistsAt(@Nullable Inventory inventory)
-    {
-        if (inventory == null || !hasAnySafeBuilders()) return false;
-        return safeBuildExistsAt(holderLocation(safeHolder(inventory)));
-    }
-
     private boolean safeBuildExistsAt(@Nullable Location location)
     {
         if (location == null || !hasAnySafeBuilders()) return false;
@@ -884,6 +964,19 @@ public final class ReadOnlyContainerListener implements Listener
         catch (RuntimeException failure)
         {
             return null;
+        }
+    }
+
+    private static boolean isStorageEntity(@Nullable Entity entity)
+    {
+        try
+        {
+            if (entity instanceof Vehicle && entity instanceof InventoryHolder) return true;
+            return entity instanceof ChestedHorse chested && chested.isCarryingChest();
+        }
+        catch (RuntimeException failure)
+        {
+            return true;
         }
     }
 
