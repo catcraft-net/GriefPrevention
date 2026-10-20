@@ -26,6 +26,7 @@ import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBurnEvent;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.block.BlockFromToEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockMultiPlaceEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -459,8 +460,29 @@ public final class ReadOnlyContainerListener implements Listener
         Block block = event.getBlock();
         if (block == null || !StorageProtectionPolicy.isRedstoneComponent(block.getType())) return;
         if (!hasAnySafeBuilders()) return;
-        Player player = triggeringPlayer(event.getEntity());
-        if (player != null && safeBuilder(claimAt(block.getLocation()), player)) event.setCancelled(true);
+        UUID source = triggeringPlayerId(event.getEntity());
+        if (source != null && safeBuilderId(claimAt(block.getLocation()), source)) event.setCancelled(true);
+    }
+
+    /**
+     * Water or lava a safe builder released (for example by breaking a dam
+     * further away) must not wash away the owner's redstone. Flow into any
+     * other block is untouched, so the owner's water farms keep running.
+     */
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onFluidReachesRedstone(BlockFromToEvent event)
+    {
+        Block target = event.getToBlock();
+        if (target == null || !hasAnySafeBuilders()) return;
+        try
+        {
+            if (!StorageProtectionPolicy.isRedstoneComponent(target.getType())) return;
+        }
+        catch (RuntimeException failure)
+        {
+            return;
+        }
+        if (safeBuildExistsAt(target)) event.setCancelled(true);
     }
 
     /** Targets, wooden buttons and lightning rods hit by a safe builder's projectile. */
@@ -479,22 +501,38 @@ public final class ReadOnlyContainerListener implements Listener
     public void onSculkHear(BlockReceiveGameEvent event)
     {
         if (!hasAnySafeBuilders()) return;
-        Player player = triggeringPlayer(event.getEntity());
-        if (player != null && safeBuilder(claimAt(event.getBlock().getLocation()), player)) event.setCancelled(true);
+        UUID source = triggeringPlayerId(event.getEntity());
+        if (source != null && safeBuilderId(claimAt(event.getBlock().getLocation()), source)) event.setCancelled(true);
     }
 
-    private @Nullable Player triggeringPlayer(@Nullable Entity entity)
+    /**
+     * Checks Build Trust by UUID, so a builder who logs out after throwing an
+     * item still cannot trigger the owner's machines with it.
+     */
+    private boolean safeBuilderId(@Nullable Claim claim, UUID playerId)
+    {
+        if (claim == null || playerId == null) return false;
+        try
+        {
+            return trusts.isSafeBuilder(claim, playerId, plugin.getServer().getPlayer(playerId));
+        }
+        catch (RuntimeException failure)
+        {
+            return false;
+        }
+    }
+
+    private @Nullable UUID triggeringPlayerId(@Nullable Entity entity)
     {
         if (entity == null) return null;
         try
         {
             Player player = responsiblePlayer(entity);
-            if (player != null) return player;
-            if (entity instanceof Item item && item.getThrower() != null)
-                return plugin.getServer().getPlayer(item.getThrower());
+            if (player != null) return player.getUniqueId();
+            if (entity instanceof Item item && item.getThrower() != null) return item.getThrower();
             for (Entity passenger : entity.getPassengers())
             {
-                if (passenger instanceof Player rider) return rider;
+                if (passenger instanceof Player rider) return rider.getUniqueId();
             }
         }
         catch (RuntimeException ignored)

@@ -586,8 +586,7 @@ class ReadOnlyContainerListenerTest
         // claim-wide: players' farms keep running while someone has Build Trust.
         List<Class<?>> farmEvents = List.of(InventoryMoveItemEvent.class, InventoryPickupItemEvent.class,
                 BlockDispenseEvent.class, BlockPistonExtendEvent.class,
-                org.bukkit.event.block.BlockPistonRetractEvent.class, BlockRedstoneEvent.class,
-                BlockFromToEvent.class);
+                org.bukkit.event.block.BlockPistonRetractEvent.class, BlockRedstoneEvent.class);
         for (java.lang.reflect.Method method : ReadOnlyContainerListener.class.getMethods())
         {
             if (!method.isAnnotationPresent(org.bukkit.event.EventHandler.class)) continue;
@@ -596,6 +595,25 @@ class ReadOnlyContainerListenerTest
                 assertFalse(farmEvents.contains(parameter), method.getName());
             }
         }
+
+        // Water keeps flowing, except where it would wash away the owner's redstone.
+        when(trusts.hasAnySafeBuilders()).thenReturn(true);
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(true);
+        Block target = mock(Block.class);
+        Location targetLocation = block.getLocation();
+        when(target.getLocation()).thenReturn(targetLocation);
+        when(target.getType()).thenReturn(Material.AIR);
+        BlockFromToEvent flow = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(flow);
+        assertFalse(flow.isCancelled());
+        when(target.getType()).thenReturn(Material.REDSTONE_WIRE);
+        BlockFromToEvent washout = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(washout);
+        assertTrue(washout.isCancelled());
+        when(trusts.hasAnySafeBuilder(claim)).thenReturn(false);
+        BlockFromToEvent ownerOnly = new BlockFromToEvent(block, target);
+        listener.onFluidReachesRedstone(ownerOnly);
+        assertFalse(ownerOnly.isCancelled());
     }
 
     @Test
@@ -698,6 +716,16 @@ class ReadOnlyContainerListenerTest
                 new org.bukkit.event.entity.EntityInteractEvent(ownerItem, block);
         listener.onEntityInteract(byOwner);
         assertFalse(byOwner.isCancelled());
+
+        UUID loggedOut = UUID.randomUUID();
+        when(server.getPlayer(loggedOut)).thenReturn(null);
+        when(trusts.isSafeBuilder(claim, loggedOut, null)).thenReturn(true);
+        Item afterLogout = mock(Item.class);
+        when(afterLogout.getThrower()).thenReturn(loggedOut);
+        org.bukkit.event.entity.EntityInteractEvent offlineBuilder =
+                new org.bukkit.event.entity.EntityInteractEvent(afterLogout, block);
+        listener.onEntityInteract(offlineBuilder);
+        assertTrue(offlineBuilder.isCancelled());
 
         Entity mob = mock(Entity.class);
         org.bukkit.event.entity.EntityInteractEvent byMob =

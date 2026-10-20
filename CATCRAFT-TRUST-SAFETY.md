@@ -9,7 +9,7 @@ All trust commands use the existing `griefprevention.claims` permission. Omittin
 - `/buildtrust <player|public|permission> [duration]` (`/bt`) gives safe building and read-only container viewing. It always affects the claim where the sender is standing.
 - `/accesstrust <target> [duration]` (`/at`) gives normal GriefPrevention Access Trust.
 - `/containertrust <target> [duration]` (`/ct`) gives normal GriefPrevention Container Trust.
-- `/trust <target> [duration]` (`/tr`) gives normal full Build permission.
+- `/trust <target> [duration]` (`/tr`) gives normal full Build permission, followed by a one-line tip suggesting `/buildtrust` for building only.
 - `/managetrust <target> [duration]` (`/pt`, `/permissiontrust`) lets the target manage trusted players while preserving any separate Build Trust marker.
 - `/untrust <target>` (`/ut`) and `/untrust all` remove native trust and invalidate matching temporary metadata.
 - `/trustlist` shows each trust level and labels safe Build Trust entries as temporary or forever.
@@ -28,7 +28,7 @@ Non-empty storage and ambiguous inventory-bearing blocks cannot be broken. Empty
 
 Safe builders cannot change redstone. They cannot place, break or use redstone components, power sources or item-moving machines (dust, torches, repeaters, comparators, observers, pistons, hoppers, droppers, dispensers, crafters, levers, buttons, pressure plates, tripwires, daylight detectors, targets, sculk sensors, lightning rods, powered, detector and activator rails, TNT and storage minecarts). They also cannot place, break or right-click any block that shares a face with one of those, because changing a neighbour can power, update or rewire the owner's machines. Pressure plates, tripwires, detector rails, buttons, targets and sculk sensors ignore items the builder throws, projectiles the builder shoots, vehicles the builder rides and vibrations the builder makes. Water and lava buckets and fire are denied. The denial message tells the builder to ask for `/trust`, which can be temporary, for redstone help.
 
-Claim automation is never paused. Hoppers, droppers, pistons, redstone and fluids keep running for the owner while Build Trust exists. The only claim-wide guards left protect storage blocks from fire and explosions and storage vehicles and chested animals from environmental damage; mobs such as piglins and allays are not covered, so mob farms keep working.
+Claim automation is never paused. Hoppers, droppers, pistons, redstone and fluids keep running for the owner while Build Trust exists. Builder triggers are checked by UUID, so an item thrown before logging out still cannot trigger a plate. Water or lava flowing into a redstone component is stopped while the claim has a safe builder, so breaking a dam further away cannot wash the owner's redstone off; flow into any other block is untouched. The only claim-wide guards left protect storage blocks from fire and explosions and storage vehicles and chested animals from environmental damage; mobs such as piglins and allays are not covered, so mob farms keep working.
 
 Repeated denial messages are rate-limited. Open sessions are indexed by viewer UUID and contain only claim ID, world UUID, block coordinates, owner UUID, and a random token. Sessions and pending tasks are removed on close, quit, replacement, and plugin disable.
 

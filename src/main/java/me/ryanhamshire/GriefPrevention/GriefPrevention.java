@@ -2723,6 +2723,37 @@ public class GriefPrevention extends JavaPlugin
                 : this.dataStore.getMessage(Messages.LocationCurrentClaim);
         sendCatCraftGrantSuccess(player, recipientName, permissionDescription,
                 trustDurationDescription(request.duration()), location);
+        if (request.kind() == CatCraftTrustKind.FULL) sendBuildTrustTip(player);
+    }
+
+    private static void sendBuildTrustTip(Player player)
+    {
+        net.md_5.bungee.api.chat.TextComponent everything = new net.md_5.bungee.api.chat.TextComponent("everything");
+        everything.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+        everything.setUnderlined(true);
+        net.md_5.bungee.api.chat.TextComponent command = new net.md_5.bungee.api.chat.TextComponent("[/buildtrust]");
+        command.setColor(net.md_5.bungee.api.ChatColor.AQUA);
+        command.setClickEvent(new net.md_5.bungee.api.chat.ClickEvent(
+                net.md_5.bungee.api.chat.ClickEvent.Action.SUGGEST_COMMAND, "/buildtrust "));
+        command.setHoverEvent(new net.md_5.bungee.api.chat.HoverEvent(
+                net.md_5.bungee.api.chat.HoverEvent.Action.SHOW_TEXT,
+                new net.md_5.bungee.api.chat.hover.content.Text("Click to use /buildtrust")));
+        Player.Spigot spigot = player.spigot();
+        if (spigot == null) return;
+        spigot.sendMessage(
+                coloured("[CatCraft] ", net.md_5.bungee.api.ChatColor.AQUA),
+                coloured("Full trust gives access to ", net.md_5.bungee.api.ChatColor.YELLOW),
+                everything,
+                coloured(". For building only, use ", net.md_5.bungee.api.ChatColor.YELLOW),
+                command,
+                coloured(" instead.", net.md_5.bungee.api.ChatColor.YELLOW));
+    }
+
+    private static net.md_5.bungee.api.chat.TextComponent coloured(String text, net.md_5.bungee.api.ChatColor colour)
+    {
+        net.md_5.bungee.api.chat.TextComponent component = new net.md_5.bungee.api.chat.TextComponent(text);
+        component.setColor(colour);
+        return component;
     }
 
     private static void sendCatCraftGrantSuccess(Player player,
