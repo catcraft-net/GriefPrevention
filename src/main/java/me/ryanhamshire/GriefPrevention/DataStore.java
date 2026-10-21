@@ -451,12 +451,17 @@ public abstract class DataStore
     //adds a claim to the datastore, making it an effective claim
     synchronized void addClaim(Claim newClaim, boolean writeToStorage)
     {
-        //subdivisions are added under their parent, not directly to the hash map for direct search
+        //subdivisions are added under their parent, not to the claim list or chunk map
         if (newClaim.parent != null)
         {
             if (!newClaim.parent.children.contains(newClaim))
             {
                 newClaim.parent.children.add(newClaim);
+            }
+            //but they must be findable by ID, or getClaim(id) misses subdivisions created or loaded after the owner's PlayerData
+            if (newClaim.id != null)
+            {
+                this.claimIDMap.put(newClaim.id, newClaim);
             }
             newClaim.inDataStore = true;
             if (writeToStorage)
