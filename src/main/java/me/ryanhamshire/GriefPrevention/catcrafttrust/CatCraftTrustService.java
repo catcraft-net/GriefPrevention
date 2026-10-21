@@ -712,6 +712,8 @@ public final class CatCraftTrustService
             {
                 if (!seen.add(key)) continue;
                 long claimId = claimIdFromKey(key);
+                // A claim that is already gone has no native trust left to change.
+                if (claimAccess.resolve(claimId) == null) continue;
                 String keyTarget = targetFromKey(key);
                 TrustDimension dimension = dimensionFromKey(key);
                 Optional<TemporaryTrustRecord> previous = store.get(key);
