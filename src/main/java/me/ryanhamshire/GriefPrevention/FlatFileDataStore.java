@@ -42,6 +42,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -443,43 +444,62 @@ public class FlatFileDataStore extends DataStore
         }
 
         List<World> validWorlds = Bukkit.getServer().getWorlds();
-        List<Future<ParsedClaimFile>> parsedFiles = this.parseClaimFiles(claimFiles);
-        for (int i = 0; i < claimFiles.size(); i++)
+        ExecutorService executor = this.newClaimLoaderPool();
+        try
         {
-            File file = claimFiles.get(i);
-            long claimID = claimIDs.get(i);
-            try
+            //keep at most PARSE_WINDOW files parsed ahead of the main thread, so parsed YAML doesn't pile up in memory
+            ArrayList<Future<ParsedClaimFile>> parsedFiles = new ArrayList<>(claimFiles.size());
+            for (int i = 0; i < Math.min(PARSE_WINDOW, claimFiles.size()); i++)
             {
-                ParsedClaimFile parsed = parsedFiles.get(i).get();
+                parsedFiles.add(this.submitClaimFile(executor, claimFiles.get(i)));
+            }
+
+            for (int i = 0; i < claimFiles.size(); i++)
+            {
+                File file = claimFiles.get(i);
+                long claimID = claimIDs.get(i);
+                ParsedClaimFile parsed = awaitClaimFile(parsedFiles.get(i));
                 parsedFiles.set(i, null);  //let the parsed YAML be collected
-                if (parsed.error != null) throw parsed.error;
-
-                ArrayList<Long> out_parentID = new ArrayList<>();  //hacky output parameter
-                Claim claim = this.loadClaim(parsed.yaml, out_parentID, parsed.lastModified, claimID, validWorlds);
-                if (out_parentID.isEmpty() || out_parentID.get(0) == -1)
+                if (i + PARSE_WINDOW < claimFiles.size())
                 {
-                    this.addClaim(claim, false);
+                    parsedFiles.add(this.submitClaimFile(executor, claimFiles.get(i + PARSE_WINDOW)));
                 }
-                else
+
+                try
                 {
-                    orphans.put(claim, out_parentID.get(0));
+                    if (parsed.error != null) throw parsed.error;
+
+                    ArrayList<Long> out_parentID = new ArrayList<>();  //hacky output parameter
+                    Claim claim = this.loadClaim(parsed.yaml, out_parentID, parsed.lastModified, claimID, validWorlds);
+                    if (out_parentID.isEmpty() || out_parentID.get(0) == -1)
+                    {
+                        this.addClaim(claim, false);
+                    }
+                    else
+                    {
+                        orphans.put(claim, out_parentID.get(0));
+                    }
+                }
+
+                //if there's any problem with the file's content, log an error message and skip it
+                catch (Exception e)
+                {
+                    if (e.getMessage() != null && e.getMessage().contains("World not found"))
+                    {
+                        GriefPrevention.AddLogEntry("Failed to load a claim (ID:" + claimID + ") because its world isn't loaded (yet?).  If this is not expected, delete this claim.");
+                    }
+                    else
+                    {
+                        StringWriter errors = new StringWriter();
+                        e.printStackTrace(new PrintWriter(errors));
+                        GriefPrevention.AddLogEntry(file.getName() + " " + errors, CustomLogEntryTypes.Exception);
+                    }
                 }
             }
-
-            //if there's any problem with the file's content, log an error message and skip it
-            catch (Exception e)
-            {
-                if (e.getMessage() != null && e.getMessage().contains("World not found"))
-                {
-                    GriefPrevention.AddLogEntry("Failed to load a claim (ID:" + claimID + ") because its world isn't loaded (yet?).  If this is not expected, delete this claim.");
-                }
-                else
-                {
-                    StringWriter errors = new StringWriter();
-                    e.printStackTrace(new PrintWriter(errors));
-                    GriefPrevention.AddLogEntry(file.getName() + " " + errors, CustomLogEntryTypes.Exception);
-                }
-            }
+        }
+        finally
+        {
+            executor.shutdownNow();  //stops parsing files nobody will read if loading aborted
         }
 
         //link children to parents
@@ -494,6 +514,9 @@ public class FlatFileDataStore extends DataStore
         }
     }
 
+    //CatCraft: how many claim files may be parsed ahead of the main thread at startup
+    private static final int PARSE_WINDOW = 1024;
+
     //CatCraft: result of reading and parsing one claim file off the main thread
     private static class ParsedClaimFile
     {
@@ -502,41 +525,52 @@ public class FlatFileDataStore extends DataStore
         Exception error;
     }
 
-    //reads and parses the claim files on worker threads; the futures are in the same order as the files
-    private List<Future<ParsedClaimFile>> parseClaimFiles(List<File> claimFiles)
+    private ExecutorService newClaimLoaderPool()
     {
         int threads = Math.max(1, Math.min(8, Runtime.getRuntime().availableProcessors()));
-        ExecutorService executor = Executors.newFixedThreadPool(threads, runnable ->
+        return Executors.newFixedThreadPool(threads, runnable ->
         {
             Thread thread = new Thread(runnable, "GriefPrevention Claim Loader");
             thread.setDaemon(true);
             return thread;
         });
+    }
+
+    //reads and parses one claim file on a worker thread; file problems are kept in the result for the main thread to log
+    private Future<ParsedClaimFile> submitClaimFile(ExecutorService executor, File file)
+    {
+        return executor.submit(() ->
+        {
+            ParsedClaimFile parsed = new ParsedClaimFile();
+            try
+            {
+                parsed.yaml = this.readClaimYaml(file);
+                parsed.lastModified = file.lastModified();
+            }
+            catch (Exception e)
+            {
+                parsed.error = e;
+            }
+            return parsed;
+        });
+    }
+
+    //waits for a parsed file; an Error on a worker (e.g. OutOfMemoryError) fails the load like it did on the main thread
+    private static ParsedClaimFile awaitClaimFile(Future<ParsedClaimFile> future) throws InterruptedException
+    {
         try
         {
-            ArrayList<Future<ParsedClaimFile>> futures = new ArrayList<>(claimFiles.size());
-            for (File file : claimFiles)
-            {
-                futures.add(executor.submit(() ->
-                {
-                    ParsedClaimFile parsed = new ParsedClaimFile();
-                    try
-                    {
-                        parsed.yaml = this.readClaimYaml(file);
-                        parsed.lastModified = file.lastModified();
-                    }
-                    catch (Exception e)
-                    {
-                        parsed.error = e;
-                    }
-                    return parsed;
-                }));
-            }
-            return futures;
+            return future.get();
         }
-        finally
+        catch (InterruptedException e)
         {
-            executor.shutdown();  //already submitted files still finish
+            Thread.currentThread().interrupt();
+            throw e;
+        }
+        catch (ExecutionException e)
+        {
+            if (e.getCause() instanceof Error error) throw error;
+            throw new IllegalStateException("Claim loader failed", e.getCause());
         }
     }
 
@@ -552,13 +586,6 @@ public class FlatFileDataStore extends DataStore
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.loadFromString(builder.toString());
         return yaml;
-    }
-
-    Claim loadClaim(String input, ArrayList<Long> out_parentID, long lastModifiedDate, long claimID, List<World> validWorlds) throws InvalidConfigurationException, Exception
-    {
-        YamlConfiguration yaml = new YamlConfiguration();
-        yaml.loadFromString(input);
-        return this.loadClaim(yaml, out_parentID, lastModifiedDate, claimID, validWorlds);
     }
 
     Claim loadClaim(YamlConfiguration yaml, ArrayList<Long> out_parentID, long lastModifiedDate, long claimID, List<World> validWorlds) throws Exception
