@@ -19,6 +19,8 @@
 package me.ryanhamshire.GriefPrevention;
 
 import com.griefprevention.protection.ProtectionHelper;
+import io.papermc.paper.event.entity.EntityBreakByEntityEvent;
+import io.papermc.paper.event.entity.EntityBreakEvent;
 import me.ryanhamshire.GriefPrevention.events.ProtectDeathDropsEvent;
 import org.bukkit.Bukkit;
 import org.bukkit.ExplosionResult;
@@ -28,6 +30,7 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.World;
 import org.bukkit.World.Environment;
 import org.bukkit.block.Block;
+import org.bukkit.entity.Cushion;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.FallingBlock;
@@ -52,6 +55,7 @@ import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.entity.EntityInteractEvent;
+import org.bukkit.event.entity.EntityPlaceEvent;
 import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.ExpBottleEvent;
 import org.bukkit.event.entity.ItemMergeEvent;
@@ -755,6 +759,68 @@ public class EntityEventHandler implements Listener
             event.setCancelled(true);
             GriefPrevention.sendMessage(event.getPlayer(), TextMode.Err, noBuildReason.get());
             return;
+        }
+    }
+
+    //when a cushion is placed...
+    @EventHandler(ignoreCancelled = true, priority = EventPriority.LOWEST)
+    public void onCushionPlace(EntityPlaceEvent event)
+    {
+        if (!(event.getEntity() instanceof Cushion cushion)) return;
+
+        //don't track in worlds where claims are not enabled
+        if (!GriefPrevention.instance.claimsEnabledForWorld(cushion.getWorld())) return;
+        if (event.getPlayer() == null) return;
+
+        //FEATURE: like paintings, placing a cushion requires build permission in the claim
+        Supplier<String> noBuildReason = ProtectionHelper.checkPermission(event.getPlayer(), cushion.getLocation(), ClaimPermission.Build, event);
+        if (noBuildReason != null)
+        {
+            event.setCancelled(true);
+            GriefPrevention.sendMessage(event.getPlayer(), TextMode.Err, noBuildReason.get());
+        }
+    }
+
+    //when a cushion is broken (cushions are block-attached but not Hanging, so onHangingBreak never sees them)
+    @EventHandler(ignoreCancelled = true, priority = EventPriority.LOWEST)
+    public void onCushionBreak(EntityBreakEvent event)
+    {
+        if (!(event.getEntity() instanceof Cushion cushion)) return;
+
+        //don't track in worlds where claims are not enabled
+        if (!GriefPrevention.instance.claimsEnabledForWorld(cushion.getWorld())) return;
+
+        //losing the supporting block or burning in a fire is covered by block protection
+        EntityBreakEvent.RemoveCause cause = event.getCause();
+        if (cause == EntityBreakEvent.RemoveCause.PHYSICS
+                || cause == EntityBreakEvent.RemoveCause.OBSTRUCTION
+                || cause == EntityBreakEvent.RemoveCause.DEFAULT) return;
+
+        //find the player responsible, if any
+        Player player = null;
+        if (event instanceof EntityBreakByEntityEvent entityEvent)
+        {
+            Entity remover = entityEvent.getRemover();
+            if (remover instanceof Player playerRemover) player = playerRemover;
+            else if (remover instanceof Projectile projectile && projectile.getShooter() instanceof Player shooter) player = shooter;
+        }
+
+        if (player != null && cause != EntityBreakEvent.RemoveCause.EXPLOSION)
+        {
+            //FEATURE: claimed cushions are protected from players without build permission
+            Supplier<String> noBuildReason = ProtectionHelper.checkPermission(player, cushion.getLocation(), ClaimPermission.Build, event);
+            if (noBuildReason != null)
+            {
+                event.setCancelled(true);
+                GriefPrevention.sendMessage(player, TextMode.Err, noBuildReason.get());
+            }
+            return;
+        }
+
+        //explosions and non-player entities don't destroy claimed cushions
+        if (this.dataStore.getClaimAt(cushion.getLocation(), false, null) != null)
+        {
+            event.setCancelled(true);
         }
     }
 
