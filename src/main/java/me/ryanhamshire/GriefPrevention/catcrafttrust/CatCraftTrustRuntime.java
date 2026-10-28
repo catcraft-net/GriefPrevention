@@ -150,7 +150,7 @@ public final class CatCraftTrustRuntime
         if (owner == null) return;
         Player player = plugin.getServer().getPlayer(owner);
         if (player == null || !player.isOnline()) return;
-        String target = ChatColor.stripColor(record.target());
+        String target = ChatColor.stripColor(displayTarget(record.target()));
         String kind = switch (record.appliedKind())
         {
             case BUILD -> "Build Trust";
@@ -161,6 +161,18 @@ public final class CatCraftTrustRuntime
         };
         player.sendMessage(ChatColor.AQUA + "[CatCraft] " + ChatColor.YELLOW
                 + target + "'s temporary " + kind + " has expired.");
+    }
+
+    private static String displayTarget(String target)
+    {
+        try
+        {
+            return GriefPrevention.lookupPlayerName(UUID.fromString(target));
+        }
+        catch (IllegalArgumentException notUuid)
+        {
+            return target;
+        }
     }
 
     private static final class BukkitTrustTaskScheduler implements TrustTaskScheduler

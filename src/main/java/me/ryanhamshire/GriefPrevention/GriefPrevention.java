@@ -2905,7 +2905,7 @@ public class GriefPrevention extends JavaPlugin
 
     private static final Cache<UUID, String> PLAYER_NAME_CACHE = CacheBuilder.newBuilder().expireAfterAccess(5, TimeUnit.MINUTES).build();
     //helper method to resolve a player name from the player's UUID
-    static @NotNull String lookupPlayerName(@Nullable UUID playerID)
+    public static @NotNull String lookupPlayerName(@Nullable UUID playerID)
     {
         //parameter validation
         if (playerID == null) return getDefaultName(null);
