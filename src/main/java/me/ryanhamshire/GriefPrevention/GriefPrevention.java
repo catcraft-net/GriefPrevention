@@ -2728,9 +2728,9 @@ public class GriefPrevention extends JavaPlugin
 
     private static void sendBuildTrustTip(Player player)
     {
-        net.md_5.bungee.api.chat.TextComponent everything = new net.md_5.bungee.api.chat.TextComponent("everything");
-        everything.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
-        everything.setUnderlined(true);
+        net.md_5.bungee.api.chat.TextComponent chests = new net.md_5.bungee.api.chat.TextComponent("open your chests");
+        chests.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
+        chests.setUnderlined(true);
         net.md_5.bungee.api.chat.TextComponent command = new net.md_5.bungee.api.chat.TextComponent("[/buildtrust]");
         command.setColor(net.md_5.bungee.api.ChatColor.AQUA);
         command.setClickEvent(new net.md_5.bungee.api.chat.ClickEvent(
@@ -2742,9 +2742,9 @@ public class GriefPrevention extends JavaPlugin
         if (spigot == null) return;
         spigot.sendMessage(
                 coloured("[CatCraft] ", net.md_5.bungee.api.ChatColor.AQUA),
-                coloured("Full trust gives access to ", net.md_5.bungee.api.ChatColor.YELLOW),
-                everything,
-                coloured(". For building only, use ", net.md_5.bungee.api.ChatColor.YELLOW),
+                coloured("Full trust lets them ", net.md_5.bungee.api.ChatColor.YELLOW),
+                chests,
+                coloured(" and change your redstone. To let them build only, use ", net.md_5.bungee.api.ChatColor.YELLOW),
                 command,
                 coloured(" instead.", net.md_5.bungee.api.ChatColor.YELLOW));
     }
