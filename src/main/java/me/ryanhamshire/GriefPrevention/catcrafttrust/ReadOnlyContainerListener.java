@@ -75,7 +75,7 @@ import java.util.function.LongSupplier;
 public final class ReadOnlyContainerListener implements Listener
 {
     private static final String DENIAL_MESSAGE =
-            "§b[CatCraft] §eBuild Trust allows read-only container viewing.";
+            "§b[CatCraft] §eBuild Trust only lets you look in chests. Ask the claim owner for /containertrust if you need to use them.";
     private static final String REDSTONE_DENIAL_MESSAGE =
             "§b[CatCraft] §eBuild Trust can't change redstone or machines. Ask the claim owner for §b/trust§e if you're helping with a redstone build.";
     private static final String FLUID_DENIAL_MESSAGE =

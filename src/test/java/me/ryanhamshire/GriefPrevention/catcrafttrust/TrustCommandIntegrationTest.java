@@ -65,6 +65,7 @@ class TrustCommandIntegrationTest
     void setUp()
     {
         previousInstance = GriefPrevention.instance;
+        GriefPrevention.requireFullTrustConfirmation = false;
         plugin = mock(GriefPrevention.class);
         dataStore = mock(DataStore.class);
         service = mock(CatCraftTrustService.class);
@@ -91,6 +92,7 @@ class TrustCommandIntegrationTest
     @AfterEach
     void tearDown()
     {
+        GriefPrevention.requireFullTrustConfirmation = true;
         if (bukkit != null) bukkit.close();
         GriefPrevention.instance = previousInstance;
     }
@@ -420,6 +422,34 @@ class TrustCommandIntegrationTest
         assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public"}));
         verify(service).grant(argThat(claims -> claims.size() == 1 && claims.contains(first)),
                 eq("public"), eq(CatCraftTrustKind.FULL), isNull(Duration.class));
+    }
+
+    @Test
+    void fullTrustNeedsTheSameCommandTwice()
+            throws Exception
+    {
+        GriefPrevention.requireFullTrustConfirmation = true;
+        Claim current = mockClaim(61L);
+        when(dataStore.getClaimAt(any(), eq(true), isNull(Claim.class))).thenReturn(current);
+        when(command.getName()).thenReturn("trust");
+
+        assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public"}));
+        verify(service, never()).grant(anyCollection(), anyString(), any(), any());
+        verify(player).sendMessage(argThat((String message) -> message.contains("Full trust lets everyone break anything and take from every chest here")
+                && message.contains("Type [/trust public] again to confirm") && message.contains("[/buildtrust public]")));
+
+        // A different command in between needs its own confirmation.
+        assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public", "1d"}));
+        verify(service, never()).grant(anyCollection(), anyString(), any(), any());
+
+        assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public", "1d"}));
+        verify(service).grant(anyCollection(), eq("public"), eq(CatCraftTrustKind.FULL), any(Duration.class));
+
+        // Used up: the next /trust asks again.
+        reset(service);
+        when(service.isStarted()).thenReturn(true);
+        assertTrue(plugin.onCommand(player, command, "trust", new String[]{"public", "1d"}));
+        verify(service, never()).grant(anyCollection(), anyString(), any(), any());
     }
 
     @Test

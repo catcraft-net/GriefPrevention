@@ -2673,6 +2673,12 @@ public class GriefPrevention extends JavaPlugin
             identifierToAdd = recipientID.toString();
         }
 
+        if (request.kind() == CatCraftTrustKind.FULL
+                && !confirmFullTrust(player, commandName, args, requestedTarget, recipientName, identifierToAdd, claim))
+        {
+            return;
+        }
+
         ClaimPermission nativePermission = nativePermissionFor(request.kind());
         // Preserve GriefPrevention's original event payload while routing the
         // independent MANAGE trust kind to the CatCraft service.
@@ -2723,37 +2729,43 @@ public class GriefPrevention extends JavaPlugin
                 : this.dataStore.getMessage(Messages.LocationCurrentClaim);
         sendCatCraftGrantSuccess(player, recipientName, permissionDescription,
                 trustDurationDescription(request.duration()), location);
-        if (request.kind() == CatCraftTrustKind.FULL) sendBuildTrustTip(player);
     }
 
-    private static void sendBuildTrustTip(Player player)
-    {
-        net.md_5.bungee.api.chat.TextComponent chests = new net.md_5.bungee.api.chat.TextComponent("open your chests");
-        chests.setColor(net.md_5.bungee.api.ChatColor.YELLOW);
-        chests.setUnderlined(true);
-        net.md_5.bungee.api.chat.TextComponent command = new net.md_5.bungee.api.chat.TextComponent("[/buildtrust]");
-        command.setColor(net.md_5.bungee.api.ChatColor.AQUA);
-        command.setClickEvent(new net.md_5.bungee.api.chat.ClickEvent(
-                net.md_5.bungee.api.chat.ClickEvent.Action.SUGGEST_COMMAND, "/buildtrust "));
-        command.setHoverEvent(new net.md_5.bungee.api.chat.HoverEvent(
-                net.md_5.bungee.api.chat.HoverEvent.Action.SHOW_TEXT,
-                new net.md_5.bungee.api.chat.hover.content.Text("Click to use /buildtrust")));
-        Player.Spigot spigot = player.spigot();
-        if (spigot == null) return;
-        spigot.sendMessage(
-                coloured("[CatCraft] ", net.md_5.bungee.api.ChatColor.AQUA),
-                coloured("Full trust lets them ", net.md_5.bungee.api.ChatColor.YELLOW),
-                chests,
-                coloured(" and change your redstone. To let them build only, use ", net.md_5.bungee.api.ChatColor.YELLOW),
-                command,
-                coloured(" instead.", net.md_5.bungee.api.ChatColor.YELLOW));
-    }
+    private static final long FULL_TRUST_CONFIRM_MILLIS = 30_000L;
+    private static final java.util.concurrent.ConcurrentHashMap<java.util.UUID, String> pendingFullTrust = new java.util.concurrent.ConcurrentHashMap<>();
+    /** Full trust asks for the command twice; older tests switch this off to test the grant itself. */
+    public static volatile boolean requireFullTrustConfirmation = true;
 
-    private static net.md_5.bungee.api.chat.TextComponent coloured(String text, net.md_5.bungee.api.ChatColor colour)
+    /**
+     * Full trust needs the same command twice within 30 seconds. The first time only explains what it allows
+     * and offers Build Trust; InteractiveChat makes the bracketed commands clickable.
+     */
+    private boolean confirmFullTrust(Player player, String commandName, String[] args, String requestedTarget,
+                                     String recipientName, String identifierToAdd, Claim claim)
     {
-        net.md_5.bungee.api.chat.TextComponent component = new net.md_5.bungee.api.chat.TextComponent(text);
-        component.setColor(colour);
-        return component;
+        if (!requireFullTrustConfirmation) return true;
+        String key = identifierToAdd.toLowerCase(Locale.ROOT) + "|" + (claim == null ? "all" : String.valueOf(claim.getID()))
+                + "|" + String.join(" ", args).toLowerCase(Locale.ROOT);
+        long now = System.currentTimeMillis();
+        String pending = pendingFullTrust.get(player.getUniqueId());
+        if (pending != null)
+        {
+            int split = pending.lastIndexOf('#');
+            long expires = Long.parseLong(pending.substring(split + 1));
+            if (pending.substring(0, split).equals(key) && now <= expires)
+            {
+                pendingFullTrust.remove(player.getUniqueId());
+                return true;
+            }
+        }
+        pendingFullTrust.put(player.getUniqueId(), key + "#" + (now + FULL_TRUST_CONFIRM_MILLIS));
+        String who = recipientName.equalsIgnoreCase("public") || recipientName.equalsIgnoreCase("all") ? "everyone"
+                : ChatColor.stripColor(recipientName);
+        String where = claim == null ? "in all your claims" : "here";
+        String again = "/" + commandName + (args.length == 0 ? "" : " " + String.join(" ", args));
+        player.sendMessage("§b[CatCraft] §eFull trust lets " + who + " break anything and take from every chest " + where
+                + ". Type [" + again + "] again to confirm, or use [/buildtrust " + requestedTarget + "] to let them build only.");
+        return false;
     }
 
     private static void sendCatCraftGrantSuccess(Player player,
