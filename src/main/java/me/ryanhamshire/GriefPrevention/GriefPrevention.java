@@ -2763,8 +2763,12 @@ public class GriefPrevention extends JavaPlugin
                 : ChatColor.stripColor(recipientName);
         String where = claim == null ? "in all your claims" : "here";
         String again = "/" + commandName + (args.length == 0 ? "" : " " + String.join(" ", args));
+        String buildOnly = "/buildtrust " + (args.length == 0 ? requestedTarget : String.join(" ", args));
+        String alternative = claim == null
+                ? ", or stand in a claim and use [" + buildOnly + "] to let them build only there."
+                : ", or use [" + buildOnly + "] to let them build only.";
         player.sendMessage("§b[CatCraft] §eFull trust lets " + who + " break anything and take from every chest " + where
-                + ". Type [" + again + "] again to confirm, or use [/buildtrust " + requestedTarget + "] to let them build only.");
+                + ". Type [" + again + "] again to confirm" + alternative);
         return false;
     }
 
