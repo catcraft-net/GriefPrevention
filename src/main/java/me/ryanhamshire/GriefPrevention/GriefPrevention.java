@@ -3105,6 +3105,30 @@ public class GriefPrevention extends JavaPlugin
     //moves a player from the claim he's in to a nearby wilderness location
     public Location ejectPlayer(Player player)
     {
+        //CatCraft: leave through the nearest claim edge instead of the north-west corner
+        //(long strip claims sent players thousands of blocks away)
+        Location start = player.getLocation();
+        World world = start.getWorld();
+        int[] exit = TrappedExitFinder.find(start.getBlockX(), start.getBlockZ(),
+                (x, z) -> {
+                    Claim found = this.dataStore.getClaimAt(new Location(world, x, start.getY(), z), true, true, null);
+                    if (found == null) return null;
+                    Location lesser = found.getLesserBoundaryCorner();
+                    Location greater = found.getGreaterBoundaryCorner();
+                    return new int[] { lesser.getBlockX(), lesser.getBlockZ(), greater.getBlockX(), greater.getBlockZ() };
+                },
+                (x, z) -> world.getWorldBorder().isInside(new Location(world, x + 0.5, start.getY(), z + 0.5)));
+        if (exit != null)
+        {
+            Location column = new Location(world, exit[0], start.getY(), exit[1]);
+            GuaranteeChunkLoaded(column);
+            Block highestBlock = world.getHighestBlockAt(exit[0], exit[1]);
+            Location destination = new Location(world, highestBlock.getX() + 0.5, highestBlock.getY() + 1, highestBlock.getZ() + 0.5, start.getYaw(), start.getPitch());
+            player.teleport(destination);
+            return destination;
+        }
+
+        //fallback: upstream behaviour
         //look for a suitable location
         Location candidateLocation = player.getLocation();
         while (true)
